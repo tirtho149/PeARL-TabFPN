@@ -4,12 +4,10 @@
 
 ## Authors
 
-**Ushashi Bhattacharjee**¹*, **Alloy Das**¹, **Saria Hannan**¹, **Tirtho Roy**¹, **Soumik Sarkar**²,³
+**Ushashi Bhattacharjee**¹*, **Alloy Das**¹, **Saria Hannan**¹, **Tirtho Roy**¹, and **Soumik Sarkar**
 
 ¹Iowa State University, Ames, IA  
-²Department of Electrical and Computer Engineering, Iowa State University  
-³Center for Biomedical AI, Iowa State University  
-*Corresponding author & first author
+*First author
 
 **Special Thanks**: Koushik Howlader for valuable discussions and feedback
 
