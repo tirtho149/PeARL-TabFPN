@@ -1,0 +1,300 @@
+================================================================================
+                    PEaRL BASELINE vs TABPFN FOLLOW-UP
+                         ARCHITECTURE COMPARISON
+================================================================================
+
+BASELINE: MLP HEADS (pearl_models.PEaRL)
+================================================================================
+
+Gene Expression Matrix (N, 1000)
+    ↓
+ssGSEA Pathway Encoding
+    ↓
+Pathway Scores (N, 200) + Spatial Coords (N, 2)
+    ↓
+┌─────────────────────────────────────────────────────────────┐
+│                   STAGE 1: CONTRASTIVE LEARNING             │
+│                        (30 epochs)                           │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  Patches (N, 3, 224, 224)     Pathways (N, 200)            │
+│          ↓                              ↓                    │
+│   UNI ViT-L (1024)           PathwayEncoder                │
+│   Projection (1024→256)       (Transformer + MLP)          │
+│          ↓                              ↓                    │
+│   H_image (N, 256)           H_pathway (N, 256)            │
+│          └──────────────┬───────────────┘                   │
+│                         ↓                                   │
+│                  L2 Normalization                           │
+│                         ↓                                   │
+│              Similarity Matrix S (N×N)                      │
+│                         ↓                                   │
+│            Symmetric Contrastive Loss (NT-Xent)            │
+│                         ↓                                   │
+│        Both networks updated via gradient descent           │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+Pathways (N, 200)
+    ↓
+┌─────────────────────────────────────────────────────────────┐
+│                 STAGE 2: MLP PREDICTION HEADS               │
+│                     (20 epochs, MSE loss)                   │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  H_image (N, 256) from Vision Encoder                       │
+│          ↓                                                  │
+│  ┌──────────────────────┬──────────────────────┐           │
+│  ↓                      ↓                      ↓            │
+│  MLP Head 1         MLP Head 2            Fixed            │
+│  (Pathway)          (Gene)             Encoders            │
+│  │                  │                                      │
+│  Linear(256→256)    Linear(256→256)                        │
+│  ReLU               ReLU                                   │
+│  Linear(256→200)    Linear(256→1000)                       │
+│  │                  │                                      │
+│  ↓                  ↓                                      │
+│  ŷ_pathway (N,200)  ŷ_gene (N,1000)                       │
+│  │                  │                                      │
+│  MSE Loss ─────────┘                                       │
+│  │                                                         │
+│  Backprop to MLP heads only                                │
+│  (Encoders frozen)                                         │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+Prediction: y_hat = MLP(H_image)
+
+
+FOLLOW-UP: TABPFN HEADS (pearl_models_tabpfn.PEaRLWithTabPFN)
+================================================================================
+
+Gene Expression Matrix (N, 1000)
+    ↓
+ssGSEA Pathway Encoding
+    ↓
+Pathway Scores (N, 200) + Spatial Coords (N, 2)
+    ↓
+┌─────────────────────────────────────────────────────────────┐
+│                   STAGE 1: CONTRASTIVE LEARNING             │
+│                        (30 epochs)                           │
+│                     *** IDENTICAL TO BASELINE ***           │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  Patches (N, 3, 224, 224)     Pathways (N, 200)            │
+│          ↓                              ↓                    │
+│   UNI ViT-L (1024)           PathwayEncoder                │
+│   Projection (1024→256)       (Transformer + MLP)          │
+│          ↓                              ↓                    │
+│   H_image (N, 256)           H_pathway (N, 256)            │
+│          └──────────────┬───────────────┘                   │
+│                         ↓                                   │
+│                  L2 Normalization                           │
+│                         ↓                                   │
+│              Similarity Matrix S (N×N)                      │
+│                         ↓                                   │
+│            Symmetric Contrastive Loss (NT-Xent)            │
+│                         ↓                                   │
+│        Both networks updated via gradient descent           │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+Pathways (N, 200)
+    ↓
+┌─────────────────────────────────────────────────────────────┐
+│              STAGE 2: TABPFN PREDICTION HEADS               │
+│                   (Fitting, no SGD)                         │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  1. Collect all embeddings: X_train (320, 256)             │
+│     Collect all targets:    y_pathway (320, 200)           │
+│                              y_gene (320, 1000)             │
+│                                                              │
+│  2. Fit TabPFN Head 1:                                     │
+│     ┌──────────────────────────────────────────┐           │
+│     │  TabPFN(X_train, y_pathway)               │           │
+│     │  → Learns posterior distribution          │           │
+│     │  → Non-parametric Bayesian inference      │           │
+│     │  → Handles feature interactions           │           │
+│     └──────────────────────────────────────────┘           │
+│                                                              │
+│  3. Fit TabPFN Head 2:                                     │
+│     ┌──────────────────────────────────────────┐           │
+│     │  TabPFN(X_train, y_gene)                 │           │
+│     │  → Learns posterior distribution          │           │
+│     │  → Non-parametric Bayesian inference      │           │
+│     │  → Handles feature interactions           │           │
+│     └──────────────────────────────────────────┘           │
+│                                                              │
+│  H_image (N, 256) from Vision Encoder                       │
+│          ↓                                                  │
+│  ┌──────────────────────┬──────────────────────┐           │
+│  ↓                      ↓                      ↓            │
+│  TabPFN Head 1      TabPFN Head 2         Fixed            │
+│  (Pathway)          (Gene)              Encoders            │
+│  │                  │                                      │
+│  │  X → [Features]  │ X → [Features]                      │
+│  │  │               │ │                                   │
+│  │  Posterior Inf.  │ Posterior Inf.                      │
+│  │  (Pretrained)    │ (Pretrained)                        │
+│  │  │               │ │                                   │
+│  ↓  ↓               ↓  ↓                                   │
+│  ŷ_pathway (N,200)  ŷ_gene (N,1000)                       │
+│                                                             │
+│  NO BACKPROP - Encoders remain frozen                       │
+│  (TabPFN models already fitted)                             │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+Prediction: y_hat = TabPFN(H_image)  [pretrained + fitted]
+
+
+SIDE-BY-SIDE COMPARISON
+================================================================================
+
+                    BASELINE (MLP)              FOLLOW-UP (TabPFN)
+────────────────────────────────────────────────────────────────
+Stage 1 Training    30 epochs (SGD)            30 epochs (SGD)
+                    Contrastive loss           Contrastive loss
+                    *** IDENTICAL ***          *** IDENTICAL ***
+
+Stage 2 Training    20 epochs (SGD)            N/A (fitting only)
+                    MSE loss                   Uses fitted model
+                    Gradient updates           No gradient updates
+
+Prediction Head     Linear(256→256)            TabPFN classifier
+Architecture        ReLU                       (pretrained model)
+                    Linear(256→n_targets)      (sklearn-style API)
+
+Advantages          + Fast training            + Pretrained knowledge
+                    + Simple architecture      + Better tabular inductive bias
+                    + Easy to understand       + Uncertainty estimates
+                                               + Non-parametric
+
+Disadvantages       - No pretrained knowledge  - Slower (Bayesian inference)
+                    - Simple model             - Requires fitting data
+                    - No uncertainty           - Less interpretable
+
+Memory Usage        Low (small MLPs)           Medium (TabPFN models)
+Training Speed      Fast (few epochs)          Medium (fitting step)
+Inference Speed     Very fast                  Medium (Bayesian)
+
+Expected Result     Baseline metrics           +3-8% improvement
+                    PCC: 0.587 (gene)          PCC: 0.610-0.630 (gene)
+                    PCC: 0.506 (pathway)       PCC: 0.530-0.550 (pathway)
+
+
+FILE STRUCTURE FOR COMPARISON
+================================================================================
+
+BASELINE CODEBASE (Unchanged):
+  pearl_data.py                ← Data loading & preprocessing
+  pearl_models.py              ← PEaRL with MLP heads
+  pearl_config.py              ← Shared configuration
+  pearl_train.py               ← Two-stage training (reference)
+  pearl_eval.py                ← Evaluation metrics (reference)
+
+NEW FOLLOW-UP CODE:
+  pearl_models_tabpfn.py       ← PEaRL with TabPFN heads
+  run_comparison.py            ← Train both & compare
+
+DOCUMENTATION:
+  FOLLOW_UP_TABPFN.md          ← Detailed technical docs
+  COMPARISON_QUICK_START.md    ← Quick reference
+  FOLLOW_UP_SUMMARY.md         ← Complete summary
+  ARCHITECTURE_COMPARISON.txt  ← This file
+
+OUTPUT:
+  comparison_results/
+    └─ comparison_results.json ← Metrics & comparison
+
+
+TRAINING FLOW DIAGRAM
+================================================================================
+
+                    ┌─────────────────┐
+                    │   Load Data     │
+                    │  (HEST-1k)      │
+                    └────────┬────────┘
+                             ↓
+                    ┌─────────────────┐
+                    │ Create Loaders  │
+                    │ Train/Val/Test  │
+                    └────────┬────────┘
+                             ↓
+          ┌──────────────────┴──────────────────┐
+          ↓                                     ↓
+   ┌─────────────────┐              ┌──────────────────┐
+   │  BASELINE TRAIN │              │  TABPFN TRAIN    │
+   └────────┬────────┘              └────────┬─────────┘
+            ↓                                 ↓
+   ┌─────────────────┐              ┌──────────────────┐
+   │  Stage 1: Init  │              │  Stage 1: Init   │
+   │   PEaRL (MLP)   │              │ PEaRL (TabPFN)   │
+   └────────┬────────┘              └────────┬─────────┘
+            ↓                                 ↓
+   ┌─────────────────┐              ┌──────────────────┐
+   │  Contrastive    │              │  Contrastive     │
+   │  Learning       │              │  Learning        │
+   │  (30 epochs)    │              │  (30 epochs)     │
+   └────────┬────────┘              └────────┬─────────┘
+            ↓                                 ↓
+   ┌─────────────────┐              ┌──────────────────┐
+   │  Stage 2: Init  │              │  Stage 2: Init   │
+   │   MLP Heads     │              │  TabPFN Heads    │
+   └────────┬────────┘              └────────┬─────────┘
+            ↓                                 ↓
+   ┌─────────────────┐              ┌──────────────────┐
+   │  Fine-tune MLP  │              │  Fit TabPFN      │
+   │  (20 epochs)    │              │  (sklearn-style) │
+   └────────┬────────┘              └────────┬─────────┘
+            ↓                                 ↓
+   ┌─────────────────┐              ┌──────────────────┐
+   │  BASELINE MODEL │              │  TABPFN MODEL    │
+   │      READY      │              │      READY       │
+   └────────┬────────┘              └────────┬─────────┘
+            │                                │
+            └──────────────┬─────────────────┘
+                           ↓
+                   ┌──────────────────┐
+                   │   EVALUATION     │
+                   │  (Val/Test Data) │
+                   └────────┬─────────┘
+                            ↓
+                   ┌──────────────────┐
+                   │    COMPARISON    │
+                   │  (Metrics, %)    │
+                   └────────┬─────────┘
+                            ↓
+                   ┌──────────────────┐
+                   │  RESULTS OUTPUT  │
+                   │  (JSON + Print)  │
+                   └──────────────────┘
+
+
+================================================================================
+                              QUICK REFERENCE
+================================================================================
+
+Run Baseline Only:
+  python run_pearl.py --dataset Breast
+
+Run Comparison (Both Variants):
+  python run_comparison.py --dataset Breast
+
+Quick Test (5 min):
+  python run_comparison.py --dataset Breast --epochs-stage1 2 --epochs-stage2 2
+
+Expected Outputs:
+  ✓ console: Metrics comparison table
+  ✓ file: comparison_results/comparison_results.json
+
+Key Metrics:
+  PCC - Correlation (higher better)
+  MSE - Squared error (lower better)
+  MAE - Absolute error (lower better)
+
+Expected Improvement:
+  TabPFN vs MLP: +3-8% on PCC, -5-15% on MSE/MAE
+
+================================================================================
