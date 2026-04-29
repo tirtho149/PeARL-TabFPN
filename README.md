@@ -4,10 +4,9 @@
 
 ## Authors
 
-**Ushashi Bhattacharjee**¹*, **Alloy Das**¹, **Saria Hannan**¹, **Tirtho Roy**¹, and **Soumik Sarkar**
+**Ushashi Bhattacharjee**¹, **Alloy Das**¹, **Saria Hannan**¹, **Tirtho Roy**¹, and **Soumik Sarkar**
 
-¹Iowa State University, Ames, IA  
-*First author
+¹Iowa State University, Ames, IA
 
 **Special Thanks**: Koushik Howlader for valuable discussions and feedback
 
