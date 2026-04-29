@@ -4,7 +4,7 @@
 
 ## Authors
 
-**Udhashi Bhattacharjee**¹*, **Alloy Das**¹, **Saria Hannan**¹, **Tirtho Roy**¹, **Soumik Sarkar**²,³
+**Ushashi Bhattacharjee**¹*, **Alloy Das**¹, **Saria Hannan**¹, **Tirtho Roy**¹, **Soumik Sarkar**²,³
 
 ¹Iowa State University, Ames, IA  
 ²Department of Electrical and Computer Engineering, Iowa State University  
