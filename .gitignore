@@ -1,0 +1,39 @@
+# Data files (downloaded automatically from HuggingFace)
+hest_data/
+*.h5ad
+*.h5
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+
+# Virtual environments
+.env
+.vscode/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Generated files
+*.log
+*.pdf
+*.synctex.gz
+results/
+comparison_results/
+pearl_outputs/
+
+# OS
+.DS_Store
+.AppleDouble
+
+# Temporary
+*.tmp
+.cache/
