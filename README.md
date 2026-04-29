@@ -4,11 +4,12 @@
 
 ## Authors
 
-**Udhashi Bhattacharjee**¹, **Alloy Das**¹, **Saria Hannan**¹, **Soumik Sarkar**²,³
+**Udhashi Bhattacharjee**¹*, **Alloy Das**¹, **Saria Hannan**¹, **Tirtho Roy**¹, **Soumik Sarkar**²,³
 
 ¹Iowa State University, Ames, IA  
 ²Department of Electrical and Computer Engineering, Iowa State University  
-³Center for Biomedical AI, Iowa State University
+³Center for Biomedical AI, Iowa State University  
+*Corresponding author & first author
 
 **Special Thanks**: Koushik Howlader for valuable discussions and feedback
 
@@ -206,7 +207,7 @@ MAE         0.0876      0.0820      -6.39%
 ```bibtex
 @inproceedings{pearl_tabpfn2026,
   title={PEaRL with Pretrained Tabular Models: Enhancing Gene Expression Prediction from Histology},
-  author={Bhattacharjee, Udhashi and Das, Alloy and Hannan, Saria and Sarkar, Soumik},
+  author={Bhattacharjee, Udhashi and Das, Alloy and Hannan, Saria and Roy, Tirtho and Sarkar, Soumik},
   booktitle={IEEE International Conference on Bioinformatics and Biomedicine (BIBM)},
   year={2026}
 }
