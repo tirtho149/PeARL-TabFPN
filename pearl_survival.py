@@ -190,13 +190,24 @@ def evaluate_survival_prediction(
     # C-index
     c_idx, c_idx_std = compute_concordance_index(risk_scores, event_times, event_indicators)
 
-    # Cox model
-    cph, cox_results = fit_cox_model(pathway_pred, event_times, event_indicators)
+    # Cox on the 1-D risk score, not the 200-D pathway matrix: with n_features
+    # >> n_samples (or even comparable) the Hessian becomes singular.
+    try:
+        _, cox_results = fit_cox_model(
+            risk_scores.reshape(-1, 1),
+            event_times,
+            event_indicators,
+            feature_names=["risk_score"],
+        )
+        log_likelihood = cox_results["log_likelihood"]
+    except Exception as e:
+        print(f"Warning: Cox fit failed ({type(e).__name__}: {e}); reporting NaN log-likelihood.")
+        log_likelihood = float("nan")
 
     results = {
         "c_index": c_idx,
         "c_index_std": c_idx_std,
-        "log_likelihood": cox_results["log_likelihood"],
+        "log_likelihood": log_likelihood,
     }
 
     return results

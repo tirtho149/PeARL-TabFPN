@@ -282,38 +282,78 @@ def plot_training_curves(
     plt.close()
 
 
-def compute_metrics(predictions, targets):
+def compute_metrics(predictions, targets, drop_constant_cols: bool = True):
     """
     Compute evaluation metrics for predictions.
-    
+
     Args:
-        predictions: numpy array of predictions (N, n_features)
-        targets: numpy array of ground truth (N, n_features)
-    
+        predictions: numpy array (N, n_features)
+        targets:     numpy array (N, n_features)
+        drop_constant_cols: drop target columns with zero variance before
+            flattening for PCC. Without this, all-zero targets pair with
+            small-magnitude predictions to trivially "correlate" via the
+            global flatten, inflating reported PCC.
+
     Returns:
-        dict with PCC, MSE, MAE metrics
+        dict with PCC, MSE, MAE, plus n_cols_used and n_cols_dropped.
     """
     from scipy.stats import pearsonr
     import numpy as np
-    
+
     predictions = np.asarray(predictions)
     targets = np.asarray(targets)
-    
-    # Flatten for overall correlation
+    n_total = targets.shape[1] if targets.ndim > 1 else 1
+
+    if drop_constant_cols and targets.ndim > 1:
+        keep = targets.std(axis=0) > 1e-8
+        n_kept = int(keep.sum())
+        if n_kept == 0:
+            return {
+                "PCC": float("nan"),
+                "MSE": float(np.mean((predictions - targets) ** 2)),
+                "MAE": float(np.mean(np.abs(predictions - targets))),
+                "n_cols_used": 0,
+                "n_cols_dropped": n_total,
+            }
+        predictions = predictions[:, keep]
+        targets = targets[:, keep]
+    else:
+        n_kept = n_total
+
     pred_flat = predictions.flatten()
     true_flat = targets.flatten()
-    
-    # Pearson Correlation Coefficient
-    pcc, _ = pearsonr(pred_flat, true_flat)
-    
-    # Mean Squared Error
-    mse = np.mean((predictions - targets) ** 2)
-    
-    # Mean Absolute Error
-    mae = np.mean(np.abs(predictions - targets))
-    
+
+    # pearsonr also returns NaN if either side has zero variance overall —
+    # safer to wrap.
+    if np.std(pred_flat) < 1e-12 or np.std(true_flat) < 1e-12:
+        pcc = float("nan")
+    else:
+        pcc, _ = pearsonr(pred_flat, true_flat)
+
+    # Per-dim mean PCC — what spatial-transcriptomics papers usually report
+    # (paper PEaRL included). Less dominated by scale/normalization than the
+    # global flatten PCC, and better at surfacing gains on a subset of dims.
+    if predictions.ndim > 1 and predictions.shape[1] > 0:
+        per_dim = []
+        for d in range(predictions.shape[1]):
+            p = predictions[:, d]; t = targets[:, d]
+            if np.std(p) < 1e-12 or np.std(t) < 1e-12:
+                continue
+            r, _ = pearsonr(p, t)
+            if not np.isnan(r):
+                per_dim.append(r)
+        pcc_per_dim = float(np.mean(per_dim)) if per_dim else float("nan")
+        pcc_per_dim_n = len(per_dim)
+    else:
+        pcc_per_dim = float("nan")
+        pcc_per_dim_n = 0
+
     return {
         "PCC": float(pcc),
-        "MSE": float(mse),
-        "MAE": float(mae)
+        "PCC_per_dim_mean": pcc_per_dim,
+        "PCC_per_dim_n": pcc_per_dim_n,
+        "MSE": float(np.mean((predictions - targets) ** 2)),
+        "MAE": float(np.mean(np.abs(predictions - targets))),
+        "n_cols_used": n_kept,
+        "n_cols_dropped": n_total - n_kept,
     }

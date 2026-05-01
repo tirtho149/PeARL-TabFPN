@@ -29,6 +29,12 @@ venv/
 results/
 comparison_results/
 pearl_outputs/
+pearl_outputs_*/
+reproduction_*/
+pathway_data/
+
+# Local IDE / agent settings
+.claude/
 
 # OS
 .DS_Store

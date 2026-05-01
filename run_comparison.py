@@ -181,11 +181,50 @@ class ComparisonTrainer:
 
         self.results["tabpfn"]["contrastive_train_loss"] = train_losses
 
-        # Stage 2: Supervised fine-tuning (fit TabPFN heads)
-        print("\nStage 2: Supervised Fine-tuning (Fitting TabPFN Heads)")
-        supervised_loss = SupervisedLossTabPFN()
+        # Stage 2a: Supervised MLP-head training (mirrors baseline). Encoders
+        # frozen so the gradient signal only updates the prediction heads.
+        print("\nStage 2a: Supervised MLP head training (encoders frozen)")
+        for p in model.pathway_encoder.parameters():
+            p.requires_grad = False
+        for p in model.vision_encoder.parameters():
+            p.requires_grad = False
 
-        # Collect embeddings for TabPFN fitting
+        supervised_loss = SupervisedLossTabPFN()
+        sup_optimizer = optim.AdamW(
+            [p for p in model.parameters() if p.requires_grad],
+            lr=cfg.LR,
+            weight_decay=cfg.WEIGHT_DECAY,
+        )
+        sup_scheduler = optim.lr_scheduler.CosineAnnealingLR(sup_optimizer, T_max=epochs_stage2)
+
+        sup_train_losses = []
+        for epoch in range(epochs_stage2):
+            model.train()
+            epoch_loss = 0.0
+            for batch in tqdm(train_loader, desc=f"Stage 2a Epoch {epoch+1}/{epochs_stage2}", leave=False):
+                patches = batch["patch"].to(self.device)
+                pathways = batch["pathway"].to(self.device)
+                genes = batch["gene"].to(self.device)
+
+                pathway_pred, gene_pred = model.forward_supervised(patches)
+                p_loss, g_loss = supervised_loss(pathway_pred, pathways, gene_pred, genes)
+                loss = p_loss + g_loss
+
+                sup_optimizer.zero_grad()
+                loss.backward()
+                sup_optimizer.step()
+                epoch_loss += loss.item()
+
+            sup_train_losses.append(epoch_loss / len(train_loader))
+            sup_scheduler.step()
+
+            if (epoch + 1) % 5 == 0:
+                print(f"Epoch {epoch+1}: Train Loss = {sup_train_losses[-1]:.4f}")
+
+        self.results["tabpfn"]["supervised_train_loss"] = sup_train_losses
+
+        # Stage 2b: Fit TabPFN regressors on the frozen vision embeddings.
+        print("\nStage 2b: Fitting TabPFN regressors on top-k output dims")
         model.eval()
         X_train_list = []
         y_pathway_list = []
@@ -202,8 +241,7 @@ class ComparisonTrainer:
         y_pathway_train = np.concatenate(y_pathway_list, axis=0)
         y_gene_train = np.concatenate(y_gene_list, axis=0)
 
-        # Fit TabPFN heads
-        print("Fitting TabPFN pathway head...")
+        print(f"Embeddings: {X_train.shape}, pathway targets: {y_pathway_train.shape}, gene targets: {y_gene_train.shape}")
         model.fit_tabpfn_heads(X_train, y_pathway_train, y_gene_train)
 
         self.results["tabpfn"]["supervised_fitted"] = True
@@ -309,24 +347,48 @@ def main():
     parser.add_argument("--epochs-stage1", type=int, default=30)
     parser.add_argument("--epochs-stage2", type=int, default=20)
     parser.add_argument("--output-dir", type=str, default="./comparison_results")
+    parser.add_argument("--max-spots", type=int, default=400)
+    parser.add_argument("--train-ratio", type=float, default=0.8, help="Train/val split ratio")
+    parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
+
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Load data
     print(f"\nLoading {args.dataset} dataset...")
+    sample_id = cfg.HEST_IDS[args.dataset]
     patches, genes, pathways, coords = load_hest_sample(
         hest_dir=args.data_dir,
-        sample_id="TENX99",
+        sample_id=sample_id,
         n_genes=cfg.N_GENES,
         n_pathways=cfg.N_PATHWAYS,
-        max_spots=400,
+        max_spots=args.max_spots,
     )
 
-    train_loader = create_dataloader(patches, genes, pathways, coords, batch_size=args.batch_size, shuffle=True)
-    val_loader = create_dataloader(patches, genes, pathways, coords, batch_size=args.batch_size, shuffle=False)
+    # Held-out train/val split. Without this, both loaders shared the same data
+    # and reported metrics were training-set numbers.
+    rng = np.random.default_rng(args.seed)
+    n = len(patches)
+    n_train = int(n * args.train_ratio)
+    perm = rng.permutation(n)
+    train_idx, val_idx = perm[:n_train], perm[n_train:]
+    print(f"Split: {n_train} train / {len(val_idx)} val (seed={args.seed})")
+
+    train_loader = create_dataloader(
+        patches[train_idx], genes[train_idx], pathways[train_idx], coords[train_idx],
+        batch_size=args.batch_size, shuffle=True,
+    )
+    val_loader = create_dataloader(
+        patches[val_idx], genes[val_idx], pathways[val_idx], coords[val_idx],
+        batch_size=args.batch_size, shuffle=False,
+    )
 
     # Initialize comparison trainer
     trainer = ComparisonTrainer(device, args.output_dir)

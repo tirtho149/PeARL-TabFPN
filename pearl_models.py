@@ -100,53 +100,85 @@ class PathwayEncoder(nn.Module):
 
 class VisionEncoder(nn.Module):
     """
-    Vision Transformer-based image encoder using ViT-L (pretrained).
+    Vision Transformer-based image encoder.
 
-    Input: histology patches (N, 3, H, W)
+    backbone='uni'        → MahmoodLab/UNI, the pathology foundation model the
+                            paper uses (DINOv2 ViT-L/16 trained on 100k WSIs).
+                            Gated on HuggingFace.
+    backbone='vit_l_16'   → timm 'vit_large_patch16_224' (ImageNet pretrained)
+                            with torchvision fallback. The original code path.
+
+    Input: histology patches (N, 3, 224, 224)
     Output: image embeddings (N, embed_dim)
     """
 
-    def __init__(self, embed_dim: int = 256, pretrained: bool = True):
+    def __init__(
+        self,
+        embed_dim: int = 256,
+        pretrained: bool = True,
+        backbone: str = "vit_l_16",
+        freeze_backbone: bool = True,
+    ):
         super().__init__()
         self.embed_dim = embed_dim
+        self.backbone_name = backbone
         self.use_timm = False
+        self.is_uni = False
 
-        try:
+        if backbone == "uni":
             from timm import create_model
-            self.backbone = create_model("vit_large_patch16_224", pretrained=pretrained)
+            self.backbone = create_model(
+                "hf-hub:MahmoodLab/UNI",
+                pretrained=pretrained,
+                init_values=1e-5,
+                dynamic_img_size=True,
+            )
             self.use_timm = True
-        except:
+            self.is_uni = True
+        else:
             try:
+                from timm import create_model
+                self.backbone = create_model("vit_large_patch16_224", pretrained=pretrained)
+                self.use_timm = True
+            except Exception:
                 from torchvision.models import vit_l_16
                 vit_model = vit_l_16(weights="IMAGENET1K_V1" if pretrained else None)
                 self.backbone = VitFeatureExtractor(vit_model)
                 self.use_timm = False
-            except:
-                raise ImportError("Cannot load ViT model from timm or torchvision")
 
-        # Freeze early layers, fine-tune last 4
-        for param in list(self.backbone.parameters())[:-4]:
-            param.requires_grad = False
+        # Freeze the entire backbone by default — UNI in particular is
+        # 300M params, fine-tuning it on small histology subsets just
+        # destroys the pretraining. Keep proj_head trainable.
+        if freeze_backbone:
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+        else:
+            for p in list(self.backbone.parameters())[:-4]:
+                p.requires_grad = False
 
-        # Projection head
+        # Both UNI and timm vit_l_16 emit 1024-d CLS embeddings.
         self.proj_head = nn.Linear(1024, embed_dim)
 
     def forward(self, patches: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            patches: (batch, 3, H, W)
+        return self.proj_head(self.backbone_features(patches))
 
-        Returns:
-            embeddings: (batch, embed_dim)
+    def backbone_features(self, patches: torch.Tensor) -> torch.Tensor:
+        """Return raw 1024-d backbone features (CLS token), without proj_head.
+
+        Used by the feature-caching path: the heavy backbone forward runs
+        once per spot per fold and the cached features are reused for every
+        training epoch.
         """
+        if self.is_uni:
+            return self.backbone(patches)  # UNI returns (N, 1024) directly
         if self.use_timm:
             x = self.backbone.forward_features(patches)
-            cls_token = x[:, 0]
-        else:
-            cls_token = self.backbone(patches)
+            return x[:, 0]
+        return self.backbone(patches)
 
-        embeddings = self.proj_head(cls_token)
-        return embeddings
+    def head_from_features(self, features: torch.Tensor) -> torch.Tensor:
+        """Project precomputed (N, 1024) backbone features to embed_dim."""
+        return self.proj_head(features)
 
 
 class PEaRL(nn.Module):

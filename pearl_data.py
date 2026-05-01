@@ -32,34 +32,38 @@ def ssgsea(expr_matrix: np.ndarray, gene_names: List[str], pathways: Dict[str, L
     Returns:
         (n_spots, n_pathways) enrichment scores
     """
-    n_spots = expr_matrix.shape[0]
+    n_spots, n_genes = expr_matrix.shape
     n_pathways = len(pathways)
-    scores = np.zeros((n_spots, n_pathways))
+    scores = np.zeros((n_spots, n_pathways), dtype=np.float32)
+
+    if n_pathways == 0 or n_genes == 0:
+        return scores
+
+    # Rank once per spot (was being redone per-pathway, an n_pathways× speedup
+    # since ranks don't depend on the gene set).
+    ranks = np.empty_like(expr_matrix, dtype=np.float32)
+    for s in range(n_spots):
+        ranks[s] = rankdata(expr_matrix[s]).astype(np.float32)
 
     gene_idx = {g: i for i, g in enumerate(gene_names)}
+    all_idx = np.arange(n_genes)
 
-    for p_idx, (pathway_name, genes) in enumerate(pathways.items()):
-        genes_in_dataset = [gene_idx[g] for g in genes if g in gene_idx]
-
-        if len(genes_in_dataset) == 0:
+    for p_idx, (_, genes) in enumerate(pathways.items()):
+        in_set = np.array([gene_idx[g] for g in genes if g in gene_idx], dtype=np.int64)
+        n_in = len(in_set)
+        if n_in == 0:
+            continue
+        n_out = n_genes - n_in
+        if n_out == 0:
+            scores[:, p_idx] = ranks[:, in_set].sum(axis=1) / n_in
             continue
 
-        for spot_idx in range(n_spots):
-            expr = expr_matrix[spot_idx]
-            ranked = rankdata(expr)
-
-            signal = np.sum(ranked[genes_in_dataset])
-            noise = np.sum(ranked[~np.isin(np.arange(len(expr)), genes_in_dataset)])
-
-            n_genes_in_pathway = len(genes_in_dataset)
-            n_genes_not = len(expr) - n_genes_in_pathway
-
-            if n_genes_not > 0:
-                es = signal / n_genes_in_pathway - noise / n_genes_not
-            else:
-                es = signal / n_genes_in_pathway
-
-            scores[spot_idx, p_idx] = es
+        mask = np.ones(n_genes, dtype=bool)
+        mask[in_set] = False
+        out_idx = all_idx[mask]
+        signals = ranks[:, in_set].sum(axis=1)
+        noises = ranks[:, out_idx].sum(axis=1)
+        scores[:, p_idx] = signals / n_in - noises / n_out
 
     return scores
 
@@ -72,15 +76,31 @@ def load_hest_sample(
     patch_size: int = 224,
     max_spots: int = 400,
     seed: int = 42,
+    normalization: str = "pearl_orig",
+    pathway_dict: Dict[str, List[str]] = None,
+    return_full_pathways: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load one HEST-1k sample: patches, gene expression, pathway scores, spatial coords.
 
+    normalization:
+        'pearl_orig' — CP10K + log1p genes; pathway scores z-normalized per-column
+                       (the original code's behavior; produces std=1 targets).
+        'paper'      — CP10K + log1p genes, then per-gene min-max scaled to [0,1];
+                       pathway scores left as raw ssGSEA (~0.05 std). This matches
+                       the scale at which the published paper reports MSE/MAE.
+
+    pathway_dict: if provided, score these pathways instead of loading Reactome.
+                  Used by `load_hest_multi_sample` to keep pathway columns aligned
+                  across samples.
+    return_full_pathways: if True, return all scored pathways (no top-N selection).
+                          Used by the multi-sample loader to do global selection.
+
     Returns:
         patches: (n_spots, 3, H, W) float32 [0, 1]
-        genes: (n_spots, n_genes) float32
-        pathways: (n_spots, n_pathways) float32
-        coords: (n_spots, 2) float32 normalized [0, 1]
+        genes:   (n_spots, n_genes) float32
+        pathways: (n_spots, n_pathways) float32 (or full set if return_full_pathways)
+        coords:  (n_spots, 2) float32 normalized [0, 1]
     """
     rng = np.random.default_rng(seed)
 
@@ -140,17 +160,35 @@ def load_hest_sample(
         genes = genes[:, :n_genes].copy()
         n_genes_actual = n_genes
 
-    # Pathway scoring (placeholder - would load from Reactome/MSigDB)
-    pathways_dict = _load_pathways_from_reactome()  # Would fetch real pathways
+    # Pathway scoring on real Reactome pathway definitions.
+    pathways_dict = pathway_dict if pathway_dict is not None else _load_pathways_from_reactome()
     pathway_scores = ssgsea(genes[:, :n_genes_actual], gene_names[:n_genes_actual], pathways_dict)
 
-    if pathway_scores.shape[1] < n_pathways:
-        pad = np.zeros((pathway_scores.shape[0], n_pathways - pathway_scores.shape[1]), dtype=np.float32)
-        pathway_scores = np.concatenate([pathway_scores, pad], axis=1)
-    elif pathway_scores.shape[1] > n_pathways:
-        pathway_scores = pathway_scores[:, :n_pathways].copy()
+    if normalization == "paper":
+        # Per-gene min-max [0,1] for genes. Paper's exact gene normalization is
+        # undocumented but its tiny MSE values imply a [0,1]-ish range.
+        gmin = genes.min(axis=0, keepdims=True)
+        gmax = genes.max(axis=0, keepdims=True)
+        genes = ((genes - gmin) / (gmax - gmin + 1e-6)).astype(np.float32)
 
-    pathway_scores = ((pathway_scores - pathway_scores.mean(0)) / (pathway_scores.std(0) + 1e-6)).astype(np.float32)
+    if return_full_pathways:
+        # Multi-sample loader needs raw scores so it can do global variance-
+        # based pathway selection. It will normalize after selection.
+        pathway_scores = pathway_scores.astype(np.float32)
+    else:
+        # Single-sample path: pick top-n_pathways by variance, pad if smaller,
+        # z-normalize. Pathways with no gene-set overlap produce constant-zero
+        # columns; the top-N filter drops those.
+        col_std = pathway_scores.std(axis=0)
+        if pathway_scores.shape[1] > n_pathways:
+            keep_idx = np.argsort(col_std)[-n_pathways:][::-1]
+            pathway_scores = pathway_scores[:, keep_idx]
+        elif pathway_scores.shape[1] < n_pathways:
+            pad = np.zeros((pathway_scores.shape[0], n_pathways - pathway_scores.shape[1]), dtype=np.float32)
+            pathway_scores = np.concatenate([pathway_scores, pad], axis=1)
+        pathway_scores = (
+            (pathway_scores - pathway_scores.mean(0)) / (pathway_scores.std(0) + 1e-6)
+        ).astype(np.float32)
 
     # Process patches
     patches = np.stack(
@@ -163,6 +201,90 @@ def load_hest_sample(
     coords = (xy - xy.min(0)) / (xy.max(0) - xy.min(0) + 1e-6)
 
     return patches, genes, pathway_scores, coords
+
+
+def load_hest_multi_sample(
+    hest_dir: str,
+    sample_ids: List[str],
+    n_genes: int = 1000,
+    n_pathways: int = 200,
+    patch_size: int = 224,
+    max_spots_per_section: int = 400,
+    normalization: str = "paper",
+    seed: int = 42,
+    verbose: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load and concatenate multiple HEST-1k sections.
+
+    Pathway columns are aligned across sections by scoring against a shared
+    Reactome dict and selecting the top-`n_pathways` columns by *pooled*
+    variance after concatenation. Without this, top-N-by-variance picks
+    different pathways per section, breaking cross-section training.
+
+    Returns:
+        patches:     (total_spots, 3, H, W) float32
+        genes:       (total_spots, n_genes) float32
+        pathways:    (total_spots, n_pathways) float32
+        coords:      (total_spots, 2) float32 (per-section [0,1] normalized)
+        section_ids: (total_spots,) int64 — same index for spots from same section
+    """
+    pathway_dict = _load_pathways_from_reactome()
+    if verbose:
+        print(f"Reactome pathways loaded: {len(pathway_dict)}")
+
+    parts = []
+    for i, sid in enumerate(sample_ids):
+        try:
+            p, g, pw_full, c = load_hest_sample(
+                hest_dir=hest_dir,
+                sample_id=sid,
+                n_genes=n_genes,
+                n_pathways=n_pathways,
+                patch_size=patch_size,
+                max_spots=max_spots_per_section,
+                seed=seed + i,
+                normalization=normalization,
+                pathway_dict=pathway_dict,
+                return_full_pathways=True,
+            )
+        except Exception as e:
+            if verbose:
+                print(f"  [{i+1}/{len(sample_ids)}] {sid}: SKIP ({type(e).__name__}: {e})")
+            continue
+        parts.append((p, g, pw_full, c, i))
+        if verbose:
+            print(f"  [{i+1}/{len(sample_ids)}] {sid}: {p.shape[0]} spots")
+
+    if not parts:
+        raise RuntimeError("No samples loaded successfully")
+
+    patches = np.concatenate([t[0] for t in parts], axis=0)
+    genes = np.concatenate([t[1] for t in parts], axis=0)
+    pw_full = np.concatenate([t[2] for t in parts], axis=0)
+    coords = np.concatenate([t[3] for t in parts], axis=0)
+    section_ids = np.concatenate(
+        [np.full(t[0].shape[0], t[4], dtype=np.int64) for t in parts]
+    )
+
+    # Global top-N pathway selection by pooled variance, then z-normalize on
+    # the pooled selected columns (load_hest_sample left the full matrix raw
+    # when return_full_pathways=True).
+    col_std = pw_full.std(axis=0)
+    keep = np.argsort(col_std)[-n_pathways:][::-1]
+    pathways = pw_full[:, keep]
+    pathways = (
+        (pathways - pathways.mean(0)) / (pathways.std(0) + 1e-6)
+    ).astype(np.float32)
+
+    if verbose:
+        print(
+            f"Pooled: {patches.shape[0]} spots, {len(parts)} sections, "
+            f"genes {genes.shape}, pathways {pathways.shape} "
+            f"(picked top-{n_pathways} of {pw_full.shape[1]})"
+        )
+
+    return patches, genes, pathways, coords, section_ids
 
 
 def _find_patch_file(hest_dir: str, sample_id: str) -> str:
@@ -270,35 +392,104 @@ def _match_barcodes(bc_map: Dict[str, int], bc_list: List[str]) -> List[Tuple[in
     return pairs
 
 
+# UNI / standard ViT input statistics. Without this normalization, frozen
+# pretrained features degrade significantly — the model sees raw [0,1] tensors
+# instead of mean/std-shifted ones.
+_IMNET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
+_IMNET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+
+
 def _process_patch(img: np.ndarray, size: int) -> np.ndarray:
-    """Convert patch to CHW float32 [0, 1]."""
-    # Handle HWC/CHW conversion
+    """Convert patch to CHW float32, ImageNet-normalized."""
     if img.ndim == 3:
         if img.shape[0] in (1, 3, 4) and img.shape[-1] not in (1, 3, 4):
             img = np.transpose(img, (1, 2, 0))
         if img.shape[2] == 4:
             img = img[..., :3]
 
-    # Convert to uint8
     if img.dtype != np.uint8:
         if float(np.nanmax(img)) <= 1.0 + 1e-5:
             img = np.clip(img * 255.0, 0, 255)
         img = np.clip(img, 0, 255).astype(np.uint8)
 
-    # Ensure HWC uint8
     if img.ndim != 3 or img.shape[2] != 3:
         raise ValueError(f"Expected HWC RGB, got {img.shape}")
 
-    # Resize & normalize
     p = PILImage.fromarray(img).resize((size, size), PILImage.BILINEAR)
     arr = np.asarray(p, dtype=np.float32).transpose(2, 0, 1) / 255.0
+    arr = (arr - _IMNET_MEAN) / _IMNET_STD
     return arr
 
 
-def _load_pathways_from_reactome() -> Dict[str, List[str]]:
-    """Load Reactome pathways. TODO: Fetch from actual source."""
-    # Placeholder - would load real pathways from Reactome/MSigDB
-    return {}
+_REACTOME_GMT_URL = "https://reactome.org/download/current/ReactomePathways.gmt.zip"
+_PATHWAY_CACHE_DIR = os.environ.get("PEARL_PATHWAY_CACHE", "./pathway_data")
+
+
+def _load_pathways_from_reactome(
+    cache_dir: str = None,
+    min_genes: int = 5,
+    max_genes: int = 500,
+) -> Dict[str, List[str]]:
+    """
+    Load Reactome canonical pathways as {pathway_name: [HGNC_gene_symbol, ...]}.
+
+    Downloads the GMT once on first call (~5 MB) into `cache_dir` and reuses it.
+    Filters out pathways with too few or too many genes, since they're either
+    too noisy (small sets) or too generic (e.g., "Metabolism", >500 genes) for
+    ssGSEA to be informative.
+    """
+    import zipfile
+    import urllib.request
+
+    cache_dir = cache_dir or _PATHWAY_CACHE_DIR
+    os.makedirs(cache_dir, exist_ok=True)
+    gmt_path = os.path.join(cache_dir, "ReactomePathways.gmt")
+
+    if not os.path.isfile(gmt_path):
+        zip_path = os.path.join(cache_dir, "ReactomePathways.gmt.zip")
+        print(f"Downloading Reactome pathways from {_REACTOME_GMT_URL} ...")
+        urllib.request.urlretrieve(_REACTOME_GMT_URL, zip_path)
+        with zipfile.ZipFile(zip_path) as z:
+            for member in z.namelist():
+                if member.endswith("ReactomePathways.gmt"):
+                    with z.open(member) as src, open(gmt_path, "wb") as dst:
+                        dst.write(src.read())
+                    break
+            else:
+                z.extractall(cache_dir)
+        os.remove(zip_path)
+
+    pathways: Dict[str, List[str]] = {}
+    with open(gmt_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3:
+                continue
+            name = parts[0]
+            # Reactome's GMT bundles all species in one file, distinguished by
+            # the second column (description) being suffixed with the species
+            # name. Filter to Homo sapiens, since HEST gene symbols are human.
+            description = parts[1] if len(parts) > 1 else ""
+            if description and "Homo sapiens" not in description:
+                continue
+            genes = [g.strip() for g in parts[2:] if g.strip()]
+            if min_genes <= len(genes) <= max_genes:
+                pathways[name] = genes
+
+    if not pathways:
+        # Fall back to no species filter if the description-based filter
+        # excluded everything (different Reactome versions vary in formatting).
+        with open(gmt_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 3:
+                    continue
+                name = parts[0]
+                genes = [g.strip() for g in parts[2:] if g.strip()]
+                if min_genes <= len(genes) <= max_genes:
+                    pathways[name] = genes
+
+    return pathways
 
 
 class HESTDataset(Dataset):
