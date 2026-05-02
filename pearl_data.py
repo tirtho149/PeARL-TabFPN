@@ -170,6 +170,18 @@ def load_hest_sample(
         gmin = genes.min(axis=0, keepdims=True)
         gmax = genes.max(axis=0, keepdims=True)
         genes = ((genes - gmin) / (gmax - gmin + 1e-6)).astype(np.float32)
+    elif normalization == "paper_log1p_only":
+        # Skip per-gene normalization; targets stay in log1p space (~[0, 8]).
+        # High-variance genes dominate the global flatten PCC, which usually
+        # raises it because high-var genes are also the most predictable.
+        pass
+    elif normalization == "paper_zscore":
+        # Per-gene z-score: mean 0, std 1. PCC is invariant per dim, but the
+        # global flatten PCC can shift because all genes contribute equally
+        # in std-units (vs unequally in raw log1p).
+        gmean = genes.mean(axis=0, keepdims=True)
+        gstd = genes.std(axis=0, keepdims=True)
+        genes = ((genes - gmean) / (gstd + 1e-6)).astype(np.float32)
 
     if return_full_pathways:
         # Multi-sample loader needs raw scores so it can do global variance-

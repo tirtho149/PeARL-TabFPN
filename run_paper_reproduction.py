@@ -439,6 +439,15 @@ def main():
     p.add_argument("--weight-decay", type=float, default=1e-3)
     p.add_argument("--temperature", type=float, default=0.07)
     p.add_argument("--encoder", choices=["uni", "vit"], default="uni")
+    p.add_argument(
+        "--normalization", choices=["paper", "paper_log1p_only", "paper_zscore"],
+        default="paper",
+        help=(
+            "Gene-target normalization. paper=per-gene min-max [0,1] (default). "
+            "paper_log1p_only=log1p only, no per-gene scaling. "
+            "paper_zscore=log1p + per-gene z-score."
+        ),
+    )
     p.add_argument("--tabpfn-top-k-pathways", type=int, default=20)
     p.add_argument("--tabpfn-top-k-genes", type=int, default=50)
     p.add_argument(
@@ -495,7 +504,7 @@ def main():
         n_genes=args.n_genes,
         n_pathways=args.n_pathways,
         max_spots_per_section=args.max_spots_per_section,
-        normalization="paper",
+        normalization=args.normalization,
         seed=args.seed,
     )
     print(f"Data loaded in {time.time()-t0:.1f}s")
