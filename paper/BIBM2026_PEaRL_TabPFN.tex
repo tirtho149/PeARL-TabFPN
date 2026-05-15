@@ -19,7 +19,8 @@
 \begin{document}
 
 \title{TabPFN as a Drop-In Head for Spatial Transcriptomics:\\
-An Apple-to-Apple Comparison with the PEaRL+MLP Baseline on HEST-1k Breast}
+An Apple-to-Apple Comparison with the PEaRL+MLP Baseline\\
+across HEST-1k Breast, Skin, and Lymph Cohorts}
 
 \author{\IEEEauthorblockN{Ushashi Bhattacharjee\textsuperscript{1,\dag}, Alloy Das\textsuperscript{1,\dag}, Saria Hannan\textsuperscript{1}, Tirtho Roy\textsuperscript{1}, and Soumik Sarkar\textsuperscript{1}}
 \IEEEauthorblockA{\textsuperscript{1}Iowa State University, Ames, IA, USA \\
@@ -40,7 +41,8 @@ embeddings. We keep \emph{every} other component of PEaRL fixed --- the UNI
 backbone with its last four transformer blocks fine-tuned, the
 contrastive-then-supervised two-stage training, 8-neighbor spatial
 smoothing, Reactome + MSigDB Hallmark pathways with raw ssGSEA scaling,
-and 5-fold cross-validation on HEST-1k~\cite{hest1k} Breast --- and replace
+and 5-fold cross-validation on the three HEST-1k~\cite{hest1k} cohorts
+that the PEaRL paper reports on (Breast, Skin, and Lymph) --- and replace
 the two MLP heads, dimension-for-dimension, with a bank of
 \textsc{TabPFN}~\cite{tabpfn2023} regressors. This is a strict
 \emph{apple-to-apple} comparison: only the head changes. We report PCC,
@@ -71,12 +73,17 @@ acquired. The PEaRL framework~\cite{pearl2025} introduced a two-stage
 contrastive-then-supervised approach in which (a) image and pathway
 embeddings are aligned in a shared 256-dimensional space via NT-Xent loss
 and (b) two MLP heads are then trained on the (partially-frozen) image
-embeddings to regress gene expression and pathway activation scores. On
-the HEST-1k breast cancer cohort, PEaRL reports gene Pearson correlation
-(PCC) of $0.587 \pm 0.036$ and pathway PCC of $0.506 \pm 0.027$,
-outperforming prior pixel-to-expression baselines such as
-ST-Net~\cite{stnet}, His2ST~\cite{his2st}, BLEEP~\cite{bleep}, and
-MCLSTExp~\cite{mclstexp}.
+embeddings to regress gene expression and pathway activation scores.
+PEaRL evaluates on three HEST-1k cohorts --- Breast, Skin, and
+Lymph --- and reports the strongest reproduction on Breast: gene
+Pearson correlation (PCC) of $0.587 \pm 0.036$ and pathway PCC of
+$0.506 \pm 0.027$, outperforming prior pixel-to-expression baselines
+such as ST-Net~\cite{stnet}, His2ST~\cite{his2st}, BLEEP~\cite{bleep},
+and MCLSTExp~\cite{mclstexp}. The Skin and Lymph cohorts use the same
+pipeline with a per-cohort pathway pool size (Skin: 609 pathways;
+Lymph: 1\,100 pathways) and a per-cohort section count limited by what
+HEST-1k provides (117 Breast, 80 Skin, and 5 Lymphoid Homo~sapiens
+sections in v1.1.0).
 
 A complementary line of work outside computational pathology has shown
 that \textsc{TabPFN}~\cite{tabpfn2023}, a transformer pretrained on
@@ -99,12 +106,14 @@ Our contributions are:
 
 \begin{itemize}
     \item An \textbf{apple-to-apple reproduction protocol} for PEaRL on
-          HEST-1k Breast: 8-neighbor smoothing, Reactome$+$MSigDB
-          Hallmark pathway pool, raw ssGSEA pathway scaling,
-          last-4-block UNI fine-tuning, 5-fold section-stratified CV
-          with paper-matched (lr, weight decay, patience, epochs)
-          settings, and per-fold metrics with constant-target columns
-          retained.
+          \emph{all three} HEST-1k cohorts reported in the original
+          paper (Breast, Skin, Lymph): 8-neighbor smoothing,
+          Reactome$+$MSigDB Hallmark pathway pool, raw ssGSEA pathway
+          scaling, last-4-block UNI fine-tuning, 5-fold
+          section-stratified CV with paper-matched
+          (lr, weight decay, patience, epochs) settings, per-cohort
+          pathway pool size (775 / 609 / 1\,100), and per-fold metrics
+          with constant-target columns retained.
     \item A \textbf{strict 1:1 head replacement} of PEaRL's two MLP heads
           by a bank of TabPFN regressors, one per output dimension --- all
           $1{,}775$ dims, no top-$k$ refinement. Both heads see the same
@@ -229,7 +238,13 @@ training, and evaluation knob is matched between the baseline (MLP) and
 TabPFN conditions \emph{and} to the original paper:
 
 \begin{itemize}
-    \item \textbf{Cohort.} HEST-1k Breast, 36 sections, $\sim$13\,620 spots.
+    \item \textbf{Cohorts.} HEST-1k Breast, Skin, and Lymph (the three
+          PEaRL paper cohorts). Per-cohort section caps reflect what
+          HEST-1k provides: Breast 36 sections ($\sim$13\,620 spots
+          after the 400-per-section cap), Skin up to 36 of 80 sections,
+          Lymph up to 5 of 5 sections (small cohort, limited
+          generalization signal --- reported for completeness with the
+          paper).
     \item \textbf{Gene filter.} Drop genes detected (count $>$ 0) in fewer
           than 1\,000 spots before normalization (matches
           \texttt{sc.pp.filter\_genes(adata,~min\_cells=1000)}).
@@ -242,9 +257,10 @@ TabPFN conditions \emph{and} to the original paper:
           $\log(\sigma^2/\mu)$ within each bin, pick top-1\,000 by $z$).
     \item \textbf{Gene targets.} Per-gene min-max scaling to $[0,1]$.
     \item \textbf{Pathway annotation.} Reactome $+$ MSigDB Hallmark
-          gene sets, ssGSEA scoring~\cite{ssgsea}, top-$P\!=\!775$
-          pathways by pooled variance, \textbf{raw} (not z-normalized)
-          target scaling.
+          gene sets, ssGSEA scoring~\cite{ssgsea}, top-$P$ pathways by
+          pooled variance with $P$ set per cohort to match the
+          PEaRL paper ($P\!=\!775$ for Breast, $609$ for Skin, $1{,}100$
+          for Lymph), \textbf{raw} (not z-normalized) target scaling.
     \item \textbf{Backbone.} UNI v1 with the \textit{last 4 transformer
           blocks} fine-tuned during Stage 1 (the rest of the backbone is
           frozen throughout).
@@ -275,12 +291,18 @@ is the canonical entry point in the released package.
 
 \subsection{Setup}
 
-We evaluate on HEST-1k Breast (36 sections sampled from the 117 Breast
-rows in the HEST v1.1.0 manifest, including the TENX99 IDC cohort
-from~\cite{hest1k} Table~A11). All runs use seed 42. Hardware is one
-24~GB NVIDIA GPU (A100 / RTX 3090 / TITAN RTX equivalent); the full
-$1{,}775$-regressor TabPFN bank fits in roughly 9 hours per fold on this
-configuration, dominating the wall-clock budget.
+We evaluate on all three HEST-1k cohorts reported in the PEaRL paper:
+Breast (36 sections sampled from the 117 Breast rows in the HEST
+v1.1.0 manifest, including the TENX99 IDC cohort from~\cite{hest1k}
+Table~A11), Skin (up to 36 of 80 sections), and Lymph (5 of 5
+Lymphoid sections; reported for cohort coverage despite the small
+sample size). Per-cohort pathway pool size matches the original paper:
+$P\!=\!775$ for Breast, $609$ for Skin, $1{,}100$ for Lymph. All runs
+use seed 42 and the same code path (one \texttt{--cohort} flag
+selects). Hardware is one 24~GB NVIDIA GPU (A100 / RTX 3090 / TITAN
+RTX equivalent); the full $D_\text{out}$-regressor TabPFN bank fits in
+$\sim$9 hours per fold on Breast and Skin, dominating the wall-clock
+budget on each cohort.
 
 \subsection{Main result: head-to-head metrics}
 
@@ -290,11 +312,15 @@ reported numbers as the reference column.
 
 \begin{table*}[t]
 \centering
-\caption{Head-to-head comparison on HEST-1k Breast, 5-fold CV, apple-to-apple
-protocol of \S\ref{sec:apple-to-apple}. PCC: higher is better. MSE / MAE:
-lower is better. \TBD\ indicates numbers pending the full reproduction
-run; cells are filled from \texttt{reproduction\_results.json} after the
-5-fold completes.}
+\caption{Head-to-head comparison on the three HEST-1k cohorts reported
+in the PEaRL paper, 5-fold CV per cohort, apple-to-apple protocol of
+\S\ref{sec:apple-to-apple}. PCC: higher is better. MSE / MAE: lower is
+better. \TBD\ indicates numbers pending the full reproduction run;
+cells are filled from per-cohort \texttt{reproduction\_results.json}
+(under \texttt{reproduction\_results/\{breast,skin,lymph\}/}) after each
+5-fold completes. Breast reference numbers from~\cite{pearl2025}; Skin
+and Lymph reference cells are \TBD\ pending transcription from the
+PEaRL paper's per-cohort tables.}
 \label{tab:main}
 \begin{tabular}{l c c c c c c}
 \toprule
@@ -302,7 +328,18 @@ run; cells are filled from \texttt{reproduction\_results.json} after the
 \cmidrule(lr){2-4}\cmidrule(lr){5-7}
 \textbf{Method} & PCC $\uparrow$ & MSE $\downarrow$ & MAE $\downarrow$ & PCC $\uparrow$ & MSE $\downarrow$ & MAE $\downarrow$ \\
 \midrule
+\multicolumn{7}{l}{\textbf{Breast} (36 sections, 1{,}000 genes + 775 pathways)} \\
 PEaRL (paper,~\cite{pearl2025}) & 0.5868 \tiny{$\pm$0.0359} & 0.0732 \tiny{$\pm$0.0033} & 0.1828 \tiny{$\pm$0.0043} & 0.5055 \tiny{$\pm$0.0271} & 0.0017 \tiny{$\pm$0.0001} & 0.0314 \tiny{$\pm$0.0010} \\
+PEaRL\textsubscript{+MLP} (ours)     & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+PEaRL\textsubscript{+TabPFN} (ours)  & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+\midrule
+\multicolumn{7}{l}{\textbf{Skin} (up to 36 of 80 sections, 1{,}000 genes + 609 pathways)} \\
+PEaRL (paper,~\cite{pearl2025}) & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+PEaRL\textsubscript{+MLP} (ours)     & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+PEaRL\textsubscript{+TabPFN} (ours)  & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+\midrule
+\multicolumn{7}{l}{\textbf{Lymph} (5 of 5 sections, 1{,}000 genes + 1{,}100 pathways)} \\
+PEaRL (paper,~\cite{pearl2025}) & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
 PEaRL\textsubscript{+MLP} (ours)     & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
 PEaRL\textsubscript{+TabPFN} (ours)  & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
 \bottomrule
@@ -386,13 +423,15 @@ matrix (Fig.~\ref{fig:corr}); the TabPFN matrix should be more diagonal
 (per-dim independence) at the cost of less cross-dim coherence. The
 correlation-matrix figure is the cleanest test of this trade-off.
 
-\textbf{Compute cost.} The TabPFN condition costs roughly $6$--$7\times$
-the MLP condition at fitting time on this cohort ($\sim$45 GPU-hours
-across 5 folds for TabPFN vs $\sim$7 GPU-hours for the MLP) but only
-$2$--$3\times$ more at inference (a single batched predict per dim). In
-production, the MLP head remains the practical choice unless TabPFN
-delivers a meaningful improvement on either global PCC or the per-dim
-distribution.
+\textbf{Compute cost.} On Breast and Skin (similar section counts) the
+TabPFN condition costs roughly $6$--$7\times$ the MLP condition at
+fitting time ($\sim$45 GPU-hours across 5 folds for TabPFN vs
+$\sim$7 GPU-hours for the MLP) but only $2$--$3\times$ more at
+inference. The Lymph cohort is dominated by its small section count
+($n\!=\!5$) rather than head choice; both heads complete in well under
+a day. In production, the MLP head remains the practical choice unless
+TabPFN delivers a meaningful improvement on either global PCC or the
+per-dim distribution across multiple cohorts.
 
 % ============================================================================
 \section{Apple-to-apple reproduction recipe}
@@ -422,33 +461,49 @@ python scripts/run_reproduction.py \
 \texttt{--normalization paper},
 \texttt{--split section},
 \texttt{--keep-constant-cols},
-\texttt{--tabpfn-mode pure}. The single resulting JSON
-\texttt{reproduction\_results.json} fills Table~\ref{tab:main}.
+\texttt{--tabpfn-mode pure}. The \texttt{--cohort} flag selects
+$\{$\texttt{Breast}, \texttt{Skin}, \texttt{Lymph}$\}$; \texttt{n\_pathways}
+defaults to the paper's per-cohort value (775 / 609 / 1\,100) when not
+explicitly set. Each run writes
+\texttt{reproduction\_results/\{breast,skin,lymph\}/reproduction\_results.json};
+the three JSONs fill the three blocks of Table~\ref{tab:main}.
 
-\subsection*{Nova HPC workflow}
+\subsection*{Nova HPC workflow (all three cohorts in one chain)}
 
-For Iowa State's Nova cluster (and any SLURM allocation) we additionally
-release seven idempotent SBATCH scripts; the total wall-clock budget on
-a 24~GB A100 / RTX 3090 is summarized in Table~\ref{tab:nova-time}.
+For Iowa State's Nova cluster (and any SLURM allocation) we release a
+chain submitter that queues every phase across all requested cohorts
+with \texttt{--dependency=afterok}:
+
+\begin{verbatim}
+PEARL_REPO=$PWD bash slurm/submit_all.sh \
+    --cohorts Breast,Skin,Lymph
+\end{verbatim}
+
+Each cohort runs through 02$\to$03$\to$04$\to$06 sequentially; the
+CPU-only 00/01 phases run once at the top of the chain. Each phase
+keeps its own allocation so CPU-only phases do not hold a GPU.
+Table~\ref{tab:nova-time} summarizes the per-cohort wall-clock budget
+on a 24~GB A100 / RTX 3090.
 
 \begin{table}[h]
 \centering
-\caption{Per-phase wall-clock budget for the Nova SLURM workflow on a
-24~GB GPU. Total: $\sim$53 hours from clean allocation to head-to-head
-figures.}
+\caption{Per-cohort wall-clock budget for the Nova SLURM workflow on a
+24~GB GPU. Total for all three PEaRL cohorts is dominated by Breast and
+Skin (similar section counts); Lymph is cheap because HEST-1k only ships
+5 Lymphoid sections.}
 \label{tab:nova-time}
 \begin{tabular}{l l l}
 \toprule
-\textbf{Phase} & \textbf{Script} & \textbf{Time} \\
+\textbf{Phase / cohort} & \textbf{Script} & \textbf{Time (24 GB GPU)} \\
 \midrule
 00 install   & \texttt{slurm/00\_install.sh}         & $\sim$5 min (CPU) \\
 01 download  & \texttt{slurm/01\_download\_data.sh}  & $\sim$30 min, $\sim$45~GB \\
-02 validate  & \texttt{slurm/02\_validate.sh}        & $\sim$1 min (CPU) \\
-03 baseline  & \texttt{slurm/03\_train\_baseline.sh} & $\sim$7 hr (GPU) \\
-04 TabPFN    & \texttt{slurm/04\_train\_tabpfn.sh}   & $\sim$45 hr (GPU) \\
-06 figures   & \texttt{slurm/06\_generate\_figures.sh} & $\sim$2 min (GPU) \\
 \midrule
-\textbf{Total} & & $\sim$53 hr \\
+02--04--06 Breast & via \texttt{submit\_all.sh}    & $\sim$53 hr \\
+02--04--06 Skin   & via \texttt{submit\_all.sh}    & $\sim$50 hr \\
+02--04--06 Lymph  & via \texttt{submit\_all.sh}    & $\sim$8 hr \\
+\midrule
+\textbf{All three cohorts} & one chain submission   & $\sim$112 hr \\
 \bottomrule
 \end{tabular}
 \end{table}

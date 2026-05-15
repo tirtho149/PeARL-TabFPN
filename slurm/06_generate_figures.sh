@@ -27,8 +27,10 @@ mkdir -p logs
 
 source "$PEARL_VENV/bin/activate"
 
-echo "[figures] starting"
+PEARL_COHORT="${PEARL_COHORT:-Breast}"
+COHORT_LC="$(echo "$PEARL_COHORT" | tr '[:upper:]' '[:lower:]')"
+echo "[figures] cohort=$PEARL_COHORT  reading reproduction_results/$COHORT_LC/"
 python scripts/generate_figures.py \
-  --results-dir reproduction_results \
-  --output-dir reproduction_results/figures
+  --results-dir "reproduction_results/$COHORT_LC" \
+  --output-dir "reproduction_results/$COHORT_LC/figures"
 echo "[figures] done"

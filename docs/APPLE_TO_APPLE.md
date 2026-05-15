@@ -145,7 +145,7 @@ through real UNI features.
 ## What is NOT apple-to-apple (and why)
 
 - **Survival analysis.** PEaRL paper reports C-index 0.659 on TCGA-BRCA using AB-MIL on whole-slide images. This repo does not ship TCGA-BRCA WSIs and does not implement survival, so the BIBM 2026 paper draft excludes survival from the head-to-head table.
-- **Skin and Lymph datasets.** The apple-to-apple recipe targets Breast only because (a) the PEaRL paper's strongest reproduction is on Breast and (b) Skin (8,671 spots) and Lymph (74,220 spots) would add 10–80 more GPU hours each. The repo supports them via `cfg.HEST_IDS["Skin"]` and `cfg.HEST_IDS["Lymph"]` if you want to extend the run.
+- **Skin and Lymph cohorts.** Now fully supported via `--cohort Skin` and `--cohort Lymph`. Each runs the same apple-to-apple pipeline with the paper's per-cohort pathway count (Skin 609, Lymph 1,100) and outputs to `reproduction_results/<cohort>/`. Submit all three end-to-end via `bash slurm/submit_all.sh --cohorts Breast,Skin,Lymph`. HEST-1k v1.1.0 only ships 5 Lymphoid Homo-sapiens sections, so the Lymph run is small-sample and reported for cohort coverage rather than tight generalization bounds.
 
 ## Troubleshooting
 

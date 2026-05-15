@@ -33,8 +33,9 @@ if [ -f .env ]; then
   set +a
 fi
 
-echo "[train_tabpfn] node=$(hostname) gpu=$(nvidia-smi -L 2>/dev/null | head -n1 || echo 'no gpu')"
+PEARL_COHORT="${PEARL_COHORT:-Breast}"
+echo "[train_tabpfn] cohort=$PEARL_COHORT  node=$(hostname) gpu=$(nvidia-smi -L 2>/dev/null | head -n1 || echo 'no gpu')"
 nvidia-smi || true
 
-python scripts/train_tabpfn.py --apple-to-apple --n-sections 36 --folds 5
+python scripts/train_tabpfn.py --apple-to-apple --cohort "$PEARL_COHORT" --n-sections 36 --folds 5
 echo "[train_tabpfn] done"

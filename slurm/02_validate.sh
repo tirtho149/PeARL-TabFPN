@@ -25,6 +25,7 @@ mkdir -p logs
 
 source "$PEARL_VENV/bin/activate"
 
-echo "[validate] running scripts/validate.py"
+PEARL_COHORT="${PEARL_COHORT:-Breast}"
+echo "[validate] cohort=$PEARL_COHORT  running scripts/validate.py"
 python scripts/validate.py
 echo "[validate] done"

@@ -33,8 +33,9 @@ if [ -f .env ]; then
   set +a
 fi
 
-echo "[head_to_head] node=$(hostname) gpu=$(nvidia-smi -L 2>/dev/null | head -n1 || echo 'no gpu')"
+PEARL_COHORT="${PEARL_COHORT:-Breast}"
+echo "[head_to_head] cohort=$PEARL_COHORT  node=$(hostname) gpu=$(nvidia-smi -L 2>/dev/null | head -n1 || echo 'no gpu')"
 nvidia-smi || true
 
-python scripts/run_reproduction.py --apple-to-apple --n-sections 36 --folds 5
+python scripts/run_reproduction.py --apple-to-apple --cohort "$PEARL_COHORT" --n-sections 36 --folds 5
 echo "[head_to_head] done"

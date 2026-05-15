@@ -667,14 +667,44 @@ def run_one_fold_full_backbone(
 # ----------------------------------------------------------------------------
 
 
-def select_breast_section_ids(metadata_csv: str, n_sections: int, seed: int = 42) -> List[str]:
+# Cohort name (user-facing, matches cfg.HEST_IDS keys) → organ string in the
+# HEST-1k metadata CSV. The PEaRL paper reports on these three cohorts.
+COHORT_TO_ORGAN = {
+    "Breast": "Breast",
+    "Skin": "Skin",
+    "Lymph": "Lymphoid",  # metadata uses "Lymphoid", cfg uses "Lymph"
+}
+
+
+def select_cohort_section_ids(
+    metadata_csv: str, cohort: str, n_sections: int, seed: int = 42
+) -> List[str]:
+    """Deterministically pick up to `n_sections` Homo sapiens sections of
+    the given cohort from the HEST-1k metadata CSV. HEST-1k currently has
+    117 Breast, 80 Skin, and 5 Lymphoid Homo sapiens sections, so for Lymph
+    the cap is 5 regardless of `n_sections`."""
+    if cohort not in COHORT_TO_ORGAN:
+        raise ValueError(
+            f"Unknown cohort {cohort!r}; expected one of {sorted(COHORT_TO_ORGAN)}"
+        )
+    organ = COHORT_TO_ORGAN[cohort]
     df = pd.read_csv(metadata_csv)
-    breast = df[(df.species == "Homo sapiens") & (df.organ == "Breast")].copy()
-    breast = breast.sort_values("id").reset_index(drop=True)
-    n = min(n_sections, len(breast))
+    sub = df[(df.species == "Homo sapiens") & (df.organ == organ)].copy()
+    if len(sub) == 0:
+        raise SystemExit(
+            f"No {organ!r} sections found in {metadata_csv}. "
+            f"Check that the metadata CSV is the HEST-1k v1.1.0 manifest."
+        )
+    sub = sub.sort_values("id").reset_index(drop=True)
+    n = min(n_sections, len(sub))
     rng = np.random.default_rng(seed)
-    pick = np.sort(rng.choice(len(breast), size=n, replace=False))
-    return breast.iloc[pick]["id"].tolist()
+    pick = np.sort(rng.choice(len(sub), size=n, replace=False))
+    return sub.iloc[pick]["id"].tolist()
+
+
+# Backward-compat alias for any external caller that still imports the old name.
+def select_breast_section_ids(metadata_csv: str, n_sections: int, seed: int = 42) -> List[str]:
+    return select_cohort_section_ids(metadata_csv, "Breast", n_sections, seed=seed)
 
 
 def verify_hest_data(data_dir: str, sample_ids: List[str]) -> None:
@@ -823,10 +853,26 @@ def main():
     p.add_argument("--data-dir", default="./hest_data")
     p.add_argument("--metadata-csv", default="./hest_data/HEST_v1_1_0.csv")
     p.add_argument("--output-dir", default="./reproduction_results")
+    p.add_argument(
+        "--cohort", choices=["Breast", "Skin", "Lymph"], default="Breast",
+        help=(
+            "HEST-1k cohort to evaluate on. The PEaRL paper reports on all "
+            "three. Default 'Breast'. Selects sections by organ from the "
+            "metadata CSV; HEST-1k has 117 Breast, 80 Skin, 5 Lymphoid "
+            "Homo sapiens sections. --n-pathways defaults follow the paper "
+            "(Breast: 775, Skin: 609, Lymph: 1100) when not explicitly set."
+        ),
+    )
     p.add_argument("--n-sections", type=int, default=36)
     p.add_argument("--max-spots-per-section", type=int, default=400)
     p.add_argument("--n-genes", type=int, default=1000)
-    p.add_argument("--n-pathways", type=int, default=775)
+    p.add_argument(
+        "--n-pathways", type=int, default=None,
+        help=(
+            "Number of top-variance pathways to keep. Default depends on "
+            "--cohort: Breast 775, Skin 609, Lymph 1100 (matches PEaRL paper)."
+        ),
+    )
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--max-folds", type=int, default=None,
                    help="Run only the first N folds (still split into --folds).")
@@ -988,18 +1034,27 @@ def main():
         args.n_pathways = 200
         args.max_spots_per_section = 100
 
+    # Default n_pathways from cohort if user didn't override.
+    if args.n_pathways is None:
+        args.n_pathways = cfg.DATASET_PATHWAYS.get(args.cohort, 775)
+
     np.random.seed(args.seed); torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Namespace outputs per cohort so consecutive runs don't overwrite.
+    args.output_dir = os.path.join(args.output_dir, args.cohort.lower())
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"Device: {device}, Encoder: {args.encoder}")
+    print(f"Cohort: {args.cohort} (organ={COHORT_TO_ORGAN[args.cohort]})")
     print(f"Sections: {args.n_sections}, max_spots/section: {args.max_spots_per_section}")
     print(f"Folds: {args.folds}, n_pathways: {args.n_pathways}, batch_size: {args.batch_size}")
 
-    sample_ids = select_breast_section_ids(args.metadata_csv, args.n_sections, seed=args.seed)
-    print(f"Selected {len(sample_ids)} sections")
+    sample_ids = select_cohort_section_ids(
+        args.metadata_csv, args.cohort, args.n_sections, seed=args.seed
+    )
+    print(f"Selected {len(sample_ids)} {args.cohort} sections")
 
     # Pre-flight HEST check — fail fast if data is missing, before the long run.
     verify_hest_data(args.data_dir, sample_ids)

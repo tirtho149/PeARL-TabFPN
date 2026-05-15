@@ -18,21 +18,28 @@ Outputs feed the IEEE BIBM 2026 paper draft in `paper/BIBM2026_PEaRL_TabPFN.tex`
 
 ## Dataset
 
+PEaRL evaluates on three HEST-1k cohorts. The pipeline supports each via the `--cohort` flag; per-cohort pathway counts auto-default to the paper's value.
+
+| Cohort | Organ filter | Available sections (HEST v1.1.0) | Pathways ($P$) | Representative section |
+|---|---|---|---|---|
+| **Breast** | `organ == "Breast"` | 117 (cap 36) | 775 | `TENX99` (IDC) |
+| **Skin** | `organ == "Skin"` | 80 (cap 36) | 609 | `TENX158` |
+| **Lymph** | `organ == "Lymphoid"` | 5 (cap 5) | 1,100 | `TENX143` |
+
+Other invariants across cohorts:
+
 | Item | Value |
 |---|---|
 | Dataset | **HEST-1k** (`MahmoodLab/hest` on HuggingFace, gated) |
-| Cohort | Breast cancer Visium spatial transcriptomics |
-| Sections used | 36 (deterministically picked from the 117 available Breast rows in `HEST_v1_1_0.csv`) |
-| Section ID example | `TENX99` (Breast — `cfg.HEST_IDS["Breast"]`) |
 | Per-section input | `hest_data/st/{id}.h5ad` (expression) + `hest_data/patches/{id}.h5` (224×224 H&E patches) |
 | Spots per section (cap) | 400 default, `--max-spots-per-section` |
 | Genes | top-1000 HVGs by pooled variance, Scanpy `flavor="seurat"` |
-| Pathways | 775 (Reactome + MSigDB Hallmark), ssGSEA-scored per spot |
-| Total payload to download | **~45 GB** for the Breast cohort (incl. WSI patches) |
+| Pathway sources | Reactome + MSigDB Hallmark, ssGSEA-scored per spot |
+| Total payload to download | **~45 GB** for the Breast cohort; Skin and Lymph add to this total when pulled |
 | Foundation backbone | **UNI v1** (`MahmoodLab/UNI`, gated DINOv2 ViT-L/16 on 100k WSIs) |
 | Spatial coords | 2-D, included with every spot |
 
-The metadata CSV ships with the dataset; the actual `.h5ad` and `.h5` files are pulled by `slurm/01_download_data.sh`. The repo currently has 1 sample (`TENX99.h5ad`, 30 MB) checked in for sanity-test purposes only; the full 36-section payload arrives during Phase 01.
+The metadata CSV ships with the dataset; the actual `.h5ad` and `.h5` files are pulled by `slurm/01_download_data.sh`. The repo currently has 1 sample (`TENX99.h5ad`, 30 MB) checked in for sanity-test purposes only; the full per-cohort payload arrives during Phase 01.
 
 ## End-to-end on Nova (Iowa State HPC)
 
@@ -56,19 +63,22 @@ Then in a browser, accept the gating terms at:
 ### 1. Submit everything as a dependency chain (one command)
 
 ```bash
-# Queues all seven phases with --dependency=afterok so SLURM runs them
-# sequentially as each predecessor succeeds. Each phase gets its own
-# allocation — CPU-only phases (00/01/02) do not hold a GPU.
+# Default: Breast only — all phases chained with --dependency=afterok.
 PEARL_REPO=$PWD bash slurm/submit_all.sh
+
+# All three PEaRL cohorts, end-to-end:
+PEARL_REPO=$PWD bash slurm/submit_all.sh --cohorts Breast,Skin,Lymph
 ```
+
+Each phase gets its own allocation — CPU-only phases (00/01/02) do not hold a GPU. With `--cohorts`, the 00/01 phases run once at the top and the per-cohort 02→03→04→06 chain runs serially for each cohort. Each cohort's outputs land under `reproduction_results/<cohort>/`.
 
 Useful flags:
 
 ```bash
-bash slurm/submit_all.sh --bundled            # use slurm/05_train_head_to_head.sh instead of 03+04
+bash slurm/submit_all.sh --bundled            # use slurm/05_train_head_to_head.sh in place of 03+04
 bash slurm/submit_all.sh --skip-install       # skip 00 if venv already exists
 bash slurm/submit_all.sh --skip-download      # skip 01 if hest_data/ is already populated
-bash slurm/submit_all.sh --dry-run            # print the sbatch commands without submitting
+bash slurm/submit_all.sh --dry-run            # print sbatch commands without submitting
 ```
 
 The script prints the full chain of job IDs at the end; cancel the whole pipeline with `scancel <jobid> <jobid> ...` (dependents auto-cancel).
@@ -92,37 +102,48 @@ Every job emails `tirtho@iastate.edu` on BEGIN / END / FAIL (edit the `--mail-us
 
 Recommended GPU: **24 GB NVIDIA A100 / RTX 3090 / TITAN RTX**. 16 GB cards work with `--batch-size 64`.
 
+**Per cohort (one-shot training, 5-fold CV):**
+
 | Phase | Wall time on 24 GB GPU | Bottleneck |
 |---|---|---|
-| 00 install | ~5 min | pip wheels |
-| 01 download | ~30 min | HF mirror network |
+| 00 install | ~5 min | pip wheels (once) |
+| 01 download | ~30 min | HF mirror network (once) |
 | 02 validate | ~1 min | CPU stub training |
-| 03 baseline (MLP) | **~7 hr** | 5 folds × ~1 hr (last-4-blocks unfrozen UNI forward) |
-| 04 TabPFN-pure | **~45 hr** | 5 folds × ~9 hr (1,775 TabPFNRegressors per fold) |
+| 03 baseline (MLP) | ~7 hr (Breast/Skin), ~1 hr (Lymph) | 5 folds × ~1 hr (last-4-blocks unfrozen) |
+| 04 TabPFN-pure | ~45 hr (Breast/Skin), ~7 hr (Lymph) | TabPFNRegressor bank per fold (775 / 609 / 1,100 dims) |
 | 06 figures | ~2 min | matplotlib |
-| **Total (split 03+04)** | **~53 hr** | dominated by Phase 04 |
-| Total (bundled 05) | ~50 hr | one allocation, no phase boundary |
 
-If you start Phase 00 on a Monday morning and queue all jobs as a dependency chain, expect head-to-head figures to be ready by Thursday morning. On smaller GPUs (16 GB) add ~30% to Phases 03–05.
+**All three PEaRL cohorts chained via `--cohorts Breast,Skin,Lymph`:**
+
+| Cohort | 02–04–06 wall time |
+|---|---|
+| Breast | ~53 hr |
+| Skin | ~50 hr |
+| Lymph | ~8 hr |
+| **All three** | **~112 hr** (~4.7 days back-to-back) |
+
+If you start Phase 00 on a Monday morning and queue all jobs as a dependency chain, Breast figures land Thursday morning and the full three-cohort run finishes the following Saturday. On smaller GPUs (16 GB) add ~30% to Phases 03–05.
 
 ### 4. Outputs
 
+Each cohort writes its own namespaced subdirectory:
+
 ```
 reproduction_results/
-├── fold_results.json              # incremental — written after each fold
-├── reproduction_results.json      # final: per-fold metrics + 5-fold mean ± std + paper reference
-├── predictions/
-│   ├── fold_0.npz                 # coords, pathway/gene preds + truth (both heads)
-│   ├── fold_1.npz
-│   └── ...
-└── figures/                       # written by Phase 06
-    ├── fig_h2h_1_metric_bars.png
-    ├── fig_h2h_2_contrastive_curves.png
-    ├── ...
-    └── fig_h2h_7_pathway_corr.png
+├── breast/
+│   ├── fold_results.json              # incremental — written after each fold
+│   ├── reproduction_results.json      # final: per-fold metrics + 5-fold mean ± std + paper reference
+│   ├── predictions/
+│   │   ├── fold_0.npz                 # coords, pathway/gene preds + truth (both heads)
+│   │   └── ...
+│   └── figures/                       # written by Phase 06
+│       ├── fig_h2h_1_metric_bars.png
+│       └── ...
+├── skin/   (same structure)
+└── lymph/  (same structure)
 ```
 
-The `summary` block in `reproduction_results.json` fills `\TBD` cells in `paper/BIBM2026_PEaRL_TabPFN.tex` Table 1.
+The `summary` block in each `reproduction_results.json` fills the matching cohort block in `paper/BIBM2026_PEaRL_TabPFN.tex` Table 1.
 
 ## Local install (laptop / workstation, optional)
 
