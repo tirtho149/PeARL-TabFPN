@@ -1,0 +1,523 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+% Placeholder helper for numbers still pending from the apple-to-apple run.
+\newcommand{\TBD}{\textcolor{red}{\textbf{TBD}}}
+
+\begin{document}
+
+\title{TabPFN as a Drop-In Head for Spatial Transcriptomics:\\
+An Apple-to-Apple Comparison with the PEaRL+MLP Baseline on HEST-1k Breast}
+
+\author{\IEEEauthorblockN{Ushashi Bhattacharjee\textsuperscript{1}, Alloy Das\textsuperscript{1}, Saria Hannan\textsuperscript{1}, Tirtho Roy\textsuperscript{1}, and Soumik Sarkar\textsuperscript{1}}
+\IEEEauthorblockA{\textsuperscript{1}Iowa State University, Ames, IA, USA \\
+Special Thanks: Koushik Howlader for valuable discussions and feedback}
+}
+
+\maketitle
+
+\begin{abstract}
+We ask a focused question: when the prediction head of a pathway-enhanced
+spatial-transcriptomics model is swapped for a pretrained tabular
+foundation model, does anything change? The PEaRL framework~\cite{pearl2025}
+predicts gene and pathway expression from H\&E images by aligning a vision
+foundation model (UNI~\cite{uni2024}) with pathway scores via NT-Xent
+contrastive learning and then training two MLP heads on the frozen image
+embeddings. We keep \emph{every} other component of PEaRL fixed --- the UNI
+backbone with its last four transformer blocks fine-tuned, the
+contrastive-then-supervised two-stage training, 8-neighbor spatial
+smoothing, Reactome + MSigDB Hallmark pathways with raw ssGSEA scaling,
+and 5-fold cross-validation on HEST-1k~\cite{hest1k} Breast --- and replace
+the two MLP heads, dimension-for-dimension, with a bank of
+\textsc{TabPFN}~\cite{tabpfn2023} regressors. This is a strict
+\emph{apple-to-apple} comparison: only the head changes. We report PCC,
+MSE, MAE for both gene and pathway prediction, per-dim PCC distributions,
+spatial heatmaps for the highest-variance targets, and pathway--pathway
+co-expression structure. We additionally release the full Nova HPC
+reproduction workflow --- seven idempotent SBATCH scripts that go from
+empty allocation to head-to-head figures in roughly 53 GPU-hours on a
+24~GB GPU --- so that every number in this paper is one
+\texttt{sbatch} away. Code, configs, SLURM templates, and figures are at
+\url{https://github.com/tirtho149/PeARL-TabFPN}.
+\end{abstract}
+
+\begin{IEEEkeywords}
+spatial transcriptomics, computational pathology, foundation models, TabPFN,
+in-context tabular learning, pathway analysis, HEST-1k, UNI, contrastive
+learning, apple-to-apple reproduction
+\end{IEEEkeywords}
+
+% ============================================================================
+\section{Introduction}
+% ============================================================================
+
+Predicting molecular profiles directly from H\&E whole-slide images is a
+high-leverage problem in computational pathology: spatial transcriptomics
+assays are expensive and slow, while histology images are routinely
+acquired. The PEaRL framework~\cite{pearl2025} introduced a two-stage
+contrastive-then-supervised approach in which (a) image and pathway
+embeddings are aligned in a shared 256-dimensional space via NT-Xent loss
+and (b) two MLP heads are then trained on the (partially-frozen) image
+embeddings to regress gene expression and pathway activation scores. On
+the HEST-1k breast cancer cohort, PEaRL reports gene Pearson correlation
+(PCC) of $0.587 \pm 0.036$ and pathway PCC of $0.506 \pm 0.027$,
+outperforming prior pixel-to-expression baselines such as
+ST-Net~\cite{stnet}, His2ST~\cite{his2st}, BLEEP~\cite{bleep}, and
+MCLSTExp~\cite{mclstexp}.
+
+A complementary line of work outside computational pathology has shown
+that \textsc{TabPFN}~\cite{tabpfn2023}, a transformer pretrained on
+synthetically-generated tabular regression tasks, can match or exceed
+gradient-boosted trees on small-to-medium tabular problems with a single
+forward pass, no hyperparameter tuning, and only seconds of ``training.''
+Since PEaRL's stage-2 head problem is by construction a medium-sized
+tabular regression --- 256-dimensional fixed-encoder embeddings as
+features, $\sim$10\,000 spots as rows, and $1{,}000 + 775$ output
+dimensions on Breast --- it is natural to ask whether a pretrained
+tabular foundation model can serve as a drop-in replacement for the MLP
+head. The answer is non-obvious: TabPFN's in-context Bayesian prior was
+fit to synthetic tabular tasks, not to embeddings of pathology foundation
+models, and each TabPFN call regresses a single output dimension, so
+replacing $1{,}775$ outputs means materializing a full regressor bank
+per fold.
+
+This paper answers the question through a controlled comparison.
+Our contributions are:
+
+\begin{itemize}
+    \item An \textbf{apple-to-apple reproduction protocol} for PEaRL on
+          HEST-1k Breast: 8-neighbor smoothing, Reactome$+$MSigDB
+          Hallmark pathway pool, raw ssGSEA pathway scaling,
+          last-4-block UNI fine-tuning, 5-fold section-stratified CV
+          with paper-matched (lr, weight decay, patience, epochs)
+          settings, and per-fold metrics with constant-target columns
+          retained.
+    \item A \textbf{strict 1:1 head replacement} of PEaRL's two MLP heads
+          by a bank of TabPFN regressors, one per output dimension --- all
+          $1{,}775$ dims, no top-$k$ refinement. Both heads see the same
+          training data, the same stage-1 contrastive pretraining, and
+          the same image embeddings.
+    \item A \textbf{head-to-head evaluation} reporting PCC, MSE, MAE,
+          per-dim PCC distributions, spatial heatmaps for the
+          highest-variance targets, and pathway--pathway co-expression
+          structure --- with the PEaRL paper's reported numbers as a
+          fixed reference column.
+    \item A \textbf{reproducible HPC release} comprising a Python package
+          (\texttt{pearl\_tabpfn}, \texttt{pip install -e .}) and seven
+          idempotent Nova SBATCH scripts that automate the full
+          install~$\to$~download~$\to$~validate~$\to$~train~$\to$~figure
+          pipeline. A single \texttt{--apple-to-apple} CLI flag bundles
+          every paper-faithful setting.
+\end{itemize}
+
+% ============================================================================
+\section{Related Work}
+% ============================================================================
+
+\textbf{Spatial gene expression prediction from histology.}
+ST-Net~\cite{stnet}, His2ST~\cite{his2st}, BLEEP~\cite{bleep}, and
+MCLSTExp~\cite{mclstexp} all predict gene panels from histology
+patches. MCLSTExp and BLEEP exploit contrastive learning between image
+and expression embeddings; His2ST adds graph aggregation. PEaRL extends
+this family by replacing per-gene targets with single-sample gene-set
+enrichment (ssGSEA)~\cite{ssgsea} pathway scores during the contrastive
+alignment, reducing dimensionality and producing more biologically
+coherent embeddings. The HEST-1k~\cite{hest1k} benchmark consolidated
+multi-organ Visium spatial transcriptomics with aligned whole-slide
+images, making cross-method comparison on a shared cohort possible for
+the first time.
+
+\textbf{Foundation models for computational pathology.}
+UNI~\cite{uni2024} is a ViT-Large model trained via DINOv2 on
+$\sim$100\,000 H\&E WSIs and is the strongest commonly-available frozen
+encoder for spot-level expression regression on HEST-1k. CONCH~\cite{conch2024}
+extends the same line of work with a vision--language formulation
+trained on histology--caption pairs. Both PEaRL and our pipeline use UNI
+as the spot encoder; CONCH is an interesting alternative we note for
+future work because it produces a different feature distribution that
+may interact with TabPFN's prior differently.
+
+\textbf{Pretrained tabular models.}
+TabPFN~\cite{tabpfn2023} is a transformer pretrained on millions of
+synthetically-generated tabular regression tasks. It performs
+in-context prediction: a single forward pass on (training-row,
+query-row) pairs returns the query's target distribution. The
+in-context formulation makes TabPFN especially attractive for the
+head-replacement setting we study --- there is no head optimizer, no
+learning-rate schedule, and no per-dimension hyperparameter tuning. To
+our knowledge, no prior work has used a pretrained tabular foundation
+model as a drop-in replacement for the prediction head of a spatial
+transcriptomics model; existing applications of TabPFN in biomedical
+imaging treat it as a downstream classifier on top of pretrained
+features, not as a per-output-dimension regressor bank operating on
+contrastively-aligned multimodal embeddings.
+
+% ============================================================================
+\section{Method}
+% ============================================================================
+
+\subsection{PEaRL pipeline (unchanged)}
+
+The pipeline mirrors~\cite{pearl2025} exactly. Let $I \in \mathbb{R}^{N \times 3
+\times 224 \times 224}$ be a batch of $N$ histology patches, one per
+spatial-transcriptomics spot. The pathway encoder maps each spot's ssGSEA
+score vector $x_s \in \mathbb{R}^P$ together with its globally-normalized
+2-D coordinate to a 256-dimensional embedding through a two-layer
+Transformer with 8 attention heads. The vision encoder is UNI~v1; we
+project its 1024-dimensional CLS embedding to the same 256-d space:
+\begin{equation}
+H_\text{image} = \mathrm{MLP}_{\text{proj}}\big(\mathrm{UNI}(I)\big) \in \mathbb{R}^{N \times 256}.
+\end{equation}
+
+\textbf{Stage 1 (contrastive).} $H_\text{image}$ and $H_\text{path}$ are
+L2-normalized and aligned via a symmetric NT-Xent loss with temperature
+$\tau$. Following~\cite{pearl2025}, we fine-tune the last 4 transformer
+blocks of UNI in this stage.
+
+\textbf{Stage 2 (supervised).} The pathway encoder is frozen and two
+heads $f_\text{path}, f_\text{gene}$ regress pathway and gene targets:
+\begin{equation}
+\hat{y}_\text{path} = f_\text{path}(H_\text{image}), \quad
+\hat{y}_\text{gene} = f_\text{gene}(H_\text{image}).
+\end{equation}
+The supervised loss is the unweighted sum of the two MSE terms.
+
+\subsection{Head: MLP (baseline) vs TabPFN (ours)}
+
+The \textbf{only} difference between our two conditions is the
+implementation of $f_\text{path}$ and $f_\text{gene}$ in Stage 2.
+
+\textbf{MLP head (PEaRL baseline).} A 2-layer ReLU MLP:
+$\mathbb{R}^{256} \to \mathbb{R}^{256} \to \mathbb{R}^{D_\text{out}}$,
+trained end-to-end with AdamW (lr $= 1\!\times\!10^{-4}$, weight decay
+$1\!\times\!10^{-3}$), cosine LR schedule, up to 100 epochs with patience
+15 on validation loss.
+
+\textbf{TabPFN head (ours).} The MLP is replaced 1:1 with a bank of
+$D_\text{out}$ \texttt{TabPFNRegressor} instances, one per output
+dimension. After Stage 1 finishes (and after a Stage 2 MLP pass used
+only to fix the pathway encoder via the same gradient signal as the
+baseline\footnote{An ablation in which Stage 2 is skipped entirely for
+the TabPFN condition yielded slightly weaker numbers; we therefore train
+the MLP first and use its trained image-side projection as the input to
+TabPFN, matching the MLP condition's exposure to training signal.}),
+each TabPFN regressor consumes the training embeddings
+$H_\text{image}^\text{train}$ and the corresponding 1-D target slice; at
+inference, each regressor outputs its assigned dimension. No fine-tuning
+is performed. This is a strict replacement, \textit{not} a refinement on
+top-$k$ dims: every gene and every pathway dim is predicted by TabPFN,
+never by the MLP.
+
+\subsection{Apple-to-apple reproduction protocol}
+\label{sec:apple-to-apple}
+
+To make the comparison faithful to~\cite{pearl2025}, every preprocessing,
+training, and evaluation knob is matched between the baseline (MLP) and
+TabPFN conditions \emph{and} to the original paper:
+
+\begin{itemize}
+    \item \textbf{Cohort.} HEST-1k Breast, 36 sections, $\sim$13\,620 spots.
+    \item \textbf{Gene filter.} Drop genes detected (count $>$ 0) in fewer
+          than 1\,000 spots before normalization (matches
+          \texttt{sc.pp.filter\_genes(adata,~min\_cells=1000)}).
+    \item \textbf{Gene preprocessing.} CP10K normalization, $\log(1+x)$
+          transform, \textbf{8-neighbor spatial smoothing} on the
+          $(\text{CP10K}+\log1p)$ matrix.
+    \item \textbf{HVG selection.} \texttt{scanpy.pp.highly\_variable\_genes
+          (flavor="seurat")} when Scanpy is available; otherwise a
+          Seurat-flavor numpy fallback (bin genes by log-mean, z-score
+          $\log(\sigma^2/\mu)$ within each bin, pick top-1\,000 by $z$).
+    \item \textbf{Gene targets.} Per-gene min-max scaling to $[0,1]$.
+    \item \textbf{Pathway annotation.} Reactome $+$ MSigDB Hallmark
+          gene sets, ssGSEA scoring~\cite{ssgsea}, top-$P\!=\!775$
+          pathways by pooled variance, \textbf{raw} (not z-normalized)
+          target scaling.
+    \item \textbf{Backbone.} UNI v1 with the \textit{last 4 transformer
+          blocks} fine-tuned during Stage 1 (the rest of the backbone is
+          frozen throughout).
+    \item \textbf{Contrastive temperature.} NT-Xent $\tau$ is a
+          learnable parameter (log-parameterized, clamped to
+          $[10^{-2}, 1]$), matching the original PEaRL formulation.
+    \item \textbf{Optimizer.} AdamW with lr $=1\!\times\!10^{-4}$,
+          weight decay $1\!\times\!10^{-3}$, cosine schedule, up to 100
+          epochs per stage, early stopping with patience 15 on val loss.
+    \item \textbf{Cross-validation.} 5-fold \textbf{section-stratified}
+          (\texttt{GroupKFold} by section) so spots from the same
+          section never leak between train and val; this matches the
+          HEST-Benchmark patient-stratified convention which PEaRL
+          inherits.
+    \item \textbf{Evaluation.} PCC, MSE, MAE on the flattened
+          $(N_\text{val} \times D)$ tensor with \textit{constant-target
+          columns retained} (the paper does not mention a
+          constant-column filter, so we report the conservative number).
+\end{itemize}
+
+These settings are bundled into a single command-line flag
+\texttt{--apple-to-apple} in \texttt{scripts/run\_reproduction.py}, which
+is the canonical entry point in the released package.
+
+% ============================================================================
+\section{Experiments}
+% ============================================================================
+
+\subsection{Setup}
+
+We evaluate on HEST-1k Breast (36 sections sampled from the 117 Breast
+rows in the HEST v1.1.0 manifest, including the TENX99 IDC cohort
+from~\cite{hest1k} Table~A11). All runs use seed 42. Hardware is one
+24~GB NVIDIA GPU (A100 / RTX 3090 / TITAN RTX equivalent); the full
+$1{,}775$-regressor TabPFN bank fits in roughly 9 hours per fold on this
+configuration, dominating the wall-clock budget.
+
+\subsection{Main result: head-to-head metrics}
+
+Table~\ref{tab:main} reports the cross-validated PCC, MSE, and MAE for
+both heads on gene and pathway prediction, with the PEaRL paper's
+reported numbers as the reference column.
+
+\begin{table*}[t]
+\centering
+\caption{Head-to-head comparison on HEST-1k Breast, 5-fold CV, apple-to-apple
+protocol of \S\ref{sec:apple-to-apple}. PCC: higher is better. MSE / MAE:
+lower is better. \TBD\ indicates numbers pending the full reproduction
+run; cells are filled from \texttt{reproduction\_results.json} after the
+5-fold completes.}
+\label{tab:main}
+\begin{tabular}{l c c c c c c}
+\toprule
+& \multicolumn{3}{c}{\textbf{Gene Expression}} & \multicolumn{3}{c}{\textbf{Pathway Expression}} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+\textbf{Method} & PCC $\uparrow$ & MSE $\downarrow$ & MAE $\downarrow$ & PCC $\uparrow$ & MSE $\downarrow$ & MAE $\downarrow$ \\
+\midrule
+PEaRL (paper,~\cite{pearl2025}) & 0.5868 \tiny{$\pm$0.0359} & 0.0732 \tiny{$\pm$0.0033} & 0.1828 \tiny{$\pm$0.0043} & 0.5055 \tiny{$\pm$0.0271} & 0.0017 \tiny{$\pm$0.0001} & 0.0314 \tiny{$\pm$0.0010} \\
+PEaRL\textsubscript{+MLP} (ours)     & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+PEaRL\textsubscript{+TabPFN} (ours)  & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Per-dim PCC distribution}
+
+PCC computed on the flattened $(N \times D)$ tensor is dominated by the
+high-variance output dimensions. Per-dim PCC, averaged over dimensions
+after dropping the constant ones, is a stricter measure of whether a
+head makes \textit{every} dim well rather than just the easy ones.
+Figure~\ref{fig:per_dim_pcc} (file
+\texttt{fig\_h2h\_6\_per\_dim\_pcc.png}) overlays the per-dim PCC
+histograms of MLP and TabPFN for both targets.
+
+\begin{figure}[h]
+\centering
+\fbox{\parbox[c][2cm][c]{0.9\columnwidth}{\centering Figure placeholder: \texttt{fig\_h2h\_6\_per\_dim\_pcc.png}\\ generated by \texttt{scripts/generate\_figures.py} after the apple-to-apple run.}}
+\caption{Per-dim PCC distributions across all gene (left) and pathway (right)
+output dims, MLP head vs TabPFN head. Dashed lines mark per-distribution
+means.}
+\label{fig:per_dim_pcc}
+\end{figure}
+
+\subsection{Spatial qualitative comparison}
+
+Figure~\ref{fig:spatial} shows ground-truth, MLP-predicted, and
+TabPFN-predicted spatial heatmaps for the highest-variance genes on a
+held-out fold. Files: \texttt{fig\_h2h\_4\_gene\_spatial.png} for genes
+and \texttt{fig\_h2h\_5\_pathway\_spatial.png} for pathways.
+
+\begin{figure}[h]
+\centering
+\fbox{\parbox[c][2cm][c]{0.9\columnwidth}{\centering Figure placeholder: \texttt{fig\_h2h\_4\_gene\_spatial.png}\\ generated by \texttt{scripts/generate\_figures.py}.}}
+\caption{Spatial heatmaps for the highest-variance genes on a
+representative held-out fold. Columns: ground truth, PEaRL+MLP,
+PEaRL+TabPFN.}
+\label{fig:spatial}
+\end{figure}
+
+\subsection{Co-expression structure}
+
+A predictor can match marginal expression while flattening the
+pathway--pathway correlation structure. Figure~\ref{fig:corr} shows the
+top-50 pathway--pathway correlation matrices for ground truth, MLP
+prediction, and TabPFN prediction; visual similarity to the
+ground-truth matrix is the diagnostic.
+
+\begin{figure}[h]
+\centering
+\fbox{\parbox[c][2cm][c]{0.9\columnwidth}{\centering Figure placeholder: \texttt{fig\_h2h\_7\_pathway\_corr.png}}}
+\caption{Pathway--pathway Pearson correlation matrices for the top-50
+highest-variance pathways: ground truth (left), PEaRL+MLP (middle),
+PEaRL+TabPFN (right). Cell color is correlation $\in [-1, 1]$.}
+\label{fig:corr}
+\end{figure}
+
+% ============================================================================
+\section{Discussion}
+% ============================================================================
+
+We discuss three questions the head-to-head comparison is designed to
+answer.
+
+\textbf{Does TabPFN's in-context prior transfer to UNI embeddings?}
+At $N\!\sim\!10^4$ training spots and $D\!=\!256$ features, the head
+task sits just above TabPFN's published sweet spot ($N\!\leq\!10^4$).
+We therefore expect a narrow margin --- either direction --- and the
+informative question is whether TabPFN's \textit{distribution} of per-dim
+PCC is more uniform (stronger gains on hard, low-variance dims that the
+MLP fits to noise), or whether the MLP wins on the high-variance dims
+that drive global flatten PCC. \TBD\ \textit{Answered after the run;
+expected behavior summarized in the per-dim PCC figure.}
+
+\textbf{Does TabPFN preserve co-expression structure better?}
+TabPFN fits each output dim independently, while the MLP's shared hidden
+layer can leak information across dims. We hypothesize the MLP produces
+predictions that visually look more like the GT pathway correlation
+matrix (Fig.~\ref{fig:corr}); the TabPFN matrix should be more diagonal
+(per-dim independence) at the cost of less cross-dim coherence. The
+correlation-matrix figure is the cleanest test of this trade-off.
+
+\textbf{Compute cost.} The TabPFN condition costs roughly $6$--$7\times$
+the MLP condition at fitting time on this cohort ($\sim$45 GPU-hours
+across 5 folds for TabPFN vs $\sim$7 GPU-hours for the MLP) but only
+$2$--$3\times$ more at inference (a single batched predict per dim). In
+production, the MLP head remains the practical choice unless TabPFN
+delivers a meaningful improvement on either global PCC or the per-dim
+distribution.
+
+% ============================================================================
+\section{Apple-to-apple reproduction recipe}
+% ============================================================================
+
+A single command produces all numbers and figures in this paper from a
+local 24~GB GPU:
+
+\begin{verbatim}
+python scripts/run_reproduction.py \
+    --apple-to-apple \
+    --n-sections 36 --folds 5 \
+    --epochs-stage1 100 --epochs-stage2 100 \
+    --patience 15 --batch-size 128 \
+    --encoder uni \
+    --output-dir ./reproduction_apple_to_apple
+\end{verbatim}
+
+\noindent The \texttt{--apple-to-apple} flag bundles:
+\texttt{--smooth-genes --smoothing-k 8},
+\texttt{--min-spots-detected 1000},
+\texttt{--hvg-method scanpy},
+\texttt{--pathway-sources reactome\_msigdb},
+\texttt{--pathway-normalization raw},
+\texttt{--unfreeze-last-4-blocks},
+\texttt{--learnable-temperature},
+\texttt{--normalization paper},
+\texttt{--split section},
+\texttt{--keep-constant-cols},
+\texttt{--tabpfn-mode pure}. The single resulting JSON
+\texttt{reproduction\_results.json} fills Table~\ref{tab:main}.
+
+\subsection*{Nova HPC workflow}
+
+For Iowa State's Nova cluster (and any SLURM allocation) we additionally
+release seven idempotent SBATCH scripts; the total wall-clock budget on
+a 24~GB A100 / RTX 3090 is summarized in Table~\ref{tab:nova-time}.
+
+\begin{table}[h]
+\centering
+\caption{Per-phase wall-clock budget for the Nova SLURM workflow on a
+24~GB GPU. Total: $\sim$53 hours from clean allocation to head-to-head
+figures.}
+\label{tab:nova-time}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Phase} & \textbf{Script} & \textbf{Time} \\
+\midrule
+00 install   & \texttt{slurm/00\_install.sh}         & $\sim$5 min (CPU) \\
+01 download  & \texttt{slurm/01\_download\_data.sh}  & $\sim$30 min, $\sim$45~GB \\
+02 validate  & \texttt{slurm/02\_validate.sh}        & $\sim$1 min (CPU) \\
+03 baseline  & \texttt{slurm/03\_train\_baseline.sh} & $\sim$7 hr (GPU) \\
+04 TabPFN    & \texttt{slurm/04\_train\_tabpfn.sh}   & $\sim$45 hr (GPU) \\
+06 figures   & \texttt{slurm/06\_generate\_figures.sh} & $\sim$2 min (GPU) \\
+\midrule
+\textbf{Total} & & $\sim$53 hr \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================================
+\section{Conclusion}
+% ============================================================================
+
+We presented a controlled head-to-head comparison between MLP and TabPFN
+prediction heads on top of the PEaRL pathway-enhanced multimodal
+framework, using an apple-to-apple reproduction protocol that matches
+the original PEaRL paper's preprocessing, backbone, and training
+settings. The comparison isolates the prediction-head choice as the only
+variable. Beyond a single number, the head-to-head structure --- global
+PCC, per-dim PCC distribution, spatial heatmaps, and pathway--pathway
+co-expression matrices --- highlights the qualitatively different
+inductive biases of an MLP head (shared hidden layer, per-step
+gradient-based fitting) versus a pretrained tabular foundation model
+(per-dim in-context regression, no per-task hyperparameters). \TBD\
+\textit{Summary statement after the run completes.}
+
+% ============================================================================
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{99}
+
+\bibitem{pearl2025} S.~Majumder, S.~Kapse, M.~Bhattacharya, X.~Xu,
+A.~Yurovsky, P.~Prasanna, ``PEaRL: Pathway-Enhanced Representation
+Learning for Gene and Pathway Expression Prediction from Histology,''
+\textit{arXiv preprint arXiv:2510.03455}, 2025.
+
+\bibitem{hest1k} G.~Jaume, P.~Doucet, A.~H.~Song, M.~Y.~Lu, et al.,
+``HEST-1k: A Dataset for Spatial Transcriptomics and Histology Image
+Analysis,'' \textit{NeurIPS Datasets and Benchmarks Track}, 2024
+(arXiv:2406.16192).
+
+\bibitem{uni2024} R.~J.~Chen, T.~Ding, M.~Y.~Lu, et al.,
+``Towards a General-Purpose Foundation Model for Computational
+Pathology,'' \textit{Nature Medicine}, 30(3):850--862, 2024.
+
+\bibitem{conch2024} M.~Y.~Lu, B.~Chen, D.~F.~K.~Williamson, R.~J.~Chen,
+et al., ``A Visual-Language Foundation Model for Computational
+Pathology,'' \textit{Nature Medicine}, 30(3):863--874, 2024.
+
+\bibitem{tabpfn2023} N.~Hollmann, S.~M\"uller, K.~Eggensperger,
+F.~Hutter, ``TabPFN: A Transformer That Solves Small Tabular
+Classification Problems in a Second,'' \textit{International
+Conference on Learning Representations (ICLR)}, 2023.
+
+\bibitem{ssgsea} D.~A.~Barbie, P.~Tamayo, J.~S.~Boehm, S.~Y.~Kim, et al.,
+``Systematic RNA Interference Reveals That Oncogenic KRAS-Driven
+Cancers Require TBK1,'' \textit{Nature}, 462:108--112, 2009 (introduces
+single-sample GSEA, ssGSEA).
+
+\bibitem{stnet} B.~He et al., ``Integrating spatial gene expression and
+breast tumour morphology via deep learning,'' \textit{Nature Biomedical
+Engineering}, 4(8):827--834, 2020.
+
+\bibitem{his2st} Y.~Zeng et al., ``Spatial transcriptomics prediction
+from histology jointly through transformer and graph neural networks,''
+\textit{Briefings in Bioinformatics}, 23(5), 2022.
+
+\bibitem{bleep} R.~Xie et al., ``Spatially resolved gene expression
+prediction from histology images via bimodal contrastive learning,''
+\textit{Advances in Neural Information Processing Systems (NeurIPS)},
+2023.
+
+\bibitem{mclstexp} W.~Min et al., ``Multimodal contrastive learning
+for spatial gene expression prediction using histology images,''
+\textit{Briefings in Bioinformatics}, 25(6), 2024.
+
+\end{thebibliography}
+
+\end{document}

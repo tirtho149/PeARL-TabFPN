@@ -1,11 +1,17 @@
-"""PEaRL Models with TabPFN Prediction Heads (Follow-up Variant)"""
+"""PEaRL+TabPFN — the head-to-head condition of the BIBM 2026 paper.
+
+Replaces PEaRL's MLP prediction heads with a bank of `TabPFNRegressor`
+instances (one per output dim in `mode="pure"`). Shares encoders and the
+contrastive loss with the MLP baseline (`baseline.py`), so the only
+variable between the two conditions is the head architecture.
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from typing import Tuple, Optional
 
-from pearl_models import PathwayEncoder, VisionEncoder, VitFeatureExtractor, ContrastiveLoss
+from .encoders import PathwayEncoder, VisionEncoder, VitFeatureExtractor, ContrastiveLoss
 
 
 class TabPFNHead(nn.Module):
@@ -35,13 +41,20 @@ class TabPFNHead(nn.Module):
         output_dim: int,
         use_tabpfn: bool = True,
         tabpfn_top_k: Optional[int] = None,
-        mode: str = "refinement",  # "refinement" (replace MLP on top-k dims) or "residual" (add to MLP)
+        mode: str = "refinement",  # "refinement" | "residual" | "pure"
         n_estimators: int = 4,
     ):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
-        self.tabpfn_top_k = min(tabpfn_top_k, output_dim) if tabpfn_top_k else output_dim
+        # mode='pure' replaces the MLP entirely — fit TabPFN on every output
+        # dim regardless of tabpfn_top_k.
+        if mode == "pure":
+            self.tabpfn_top_k = output_dim
+        else:
+            self.tabpfn_top_k = (
+                min(tabpfn_top_k, output_dim) if tabpfn_top_k else output_dim
+            )
         self.mode = mode
         self.n_estimators = n_estimators
 
@@ -79,14 +92,18 @@ class TabPFNHead(nn.Module):
         return self.mlp(x)
 
     def apply_tabpfn(self, x: torch.Tensor, mlp_out: torch.Tensor) -> torch.Tensor:
-        """Apply TabPFN to MLP output on the top-k dims.
+        """Apply TabPFN to MLP output on the configured dims.
 
         - mode='refinement': overwrite MLP prediction with TabPFN prediction
-        - mode='residual': add α_d * TabPFN-predicted residual to MLP, where
-          α_d ∈ [0,1] was set on a holdout slice of train. Bounded blend
-          guarantees the eval prediction is no worse than the MLP on the
+          on top-k dims; other dims keep MLP value.
+        - mode='residual': add α_d * TabPFN-predicted residual to MLP on top-k
+          dims, where α_d ∈ [0,1] was set on a holdout slice of train. Bounded
+          blend guarantees the eval prediction is no worse than the MLP on the
           holdout (alpha=0 reduces to MLP), and stacks any genuine signal
           TabPFN found (alpha=1).
+        - mode='pure': overwrite *all* output dims with TabPFN predictions —
+          MLP is not used at inference. This is the apple-to-apple head-to-head
+          configuration: PEaRL MLP head replaced 1:1 with a TabPFN bank.
         """
         if (
             not self.use_tabpfn
@@ -97,6 +114,7 @@ class TabPFNHead(nn.Module):
         x_np = x.detach().cpu().numpy()
         out_np = mlp_out.detach().cpu().numpy().copy()
         alpha = self._alpha.detach().cpu().numpy() if self._alpha.numel() > 0 else None
+        n_dims = len(self._top_k_indices.tolist())
         for i, dim_idx in enumerate(self._top_k_indices.tolist()):
             try:
                 pred = self._regressors[i].predict(x_np)
@@ -104,9 +122,12 @@ class TabPFNHead(nn.Module):
                     a = float(alpha[i]) if alpha is not None else 1.0
                     out_np[:, dim_idx] = out_np[:, dim_idx] + a * pred
                 else:
+                    # 'refinement' and 'pure' both overwrite.
                     out_np[:, dim_idx] = pred
             except Exception as e:
                 print(f"  TabPFN predict failed for dim {dim_idx}: {e}")
+            if self.mode == "pure" and (i + 1) % 100 == 0:
+                print(f"    TabPFN predict: {i+1}/{n_dims} dims")
         return torch.from_numpy(out_np).to(mlp_out.device)
 
     def fit(self, X: np.ndarray, y: np.ndarray, mlp_pred_on_X: Optional[np.ndarray] = None):
@@ -131,7 +152,14 @@ class TabPFNHead(nn.Module):
             if y.ndim != 2:
                 raise ValueError(f"expected 2-D y, got shape {y.shape}")
 
-            if self.mode == "residual":
+            if self.mode == "pure":
+                # Pure replacement: every output dim gets its own TabPFNRegressor.
+                # No ranking, no MLP-residual logic.
+                k = y.shape[1]
+                top_k_idx = np.arange(k, dtype=np.int64)
+                fit_y = y
+                rank_label = "pure-all-dims"
+            elif self.mode == "residual":
                 if mlp_pred_on_X is None:
                     raise ValueError("mode='residual' requires mlp_pred_on_X")
                 mlp_pred_on_X = np.asarray(mlp_pred_on_X, dtype=np.float32)
@@ -139,6 +167,8 @@ class TabPFNHead(nn.Module):
                 # Pick dims where MLP is *worst* (largest residual variance).
                 rank_score = residual.var(axis=0)
                 fit_y = residual
+                k = min(self.tabpfn_top_k, y.shape[1])
+                top_k_idx = np.argsort(rank_score)[-k:][::-1].astype(np.int64).copy()
                 rank_label = "residual-var-ranked"
             elif mlp_pred_on_X is not None:
                 # Refinement mode + MLP preds available: rank by MLP residual
@@ -148,14 +178,16 @@ class TabPFNHead(nn.Module):
                 mlp_pred_on_X = np.asarray(mlp_pred_on_X, dtype=np.float32)
                 rank_score = (y - mlp_pred_on_X).var(axis=0)
                 fit_y = y
+                k = min(self.tabpfn_top_k, y.shape[1])
+                top_k_idx = np.argsort(rank_score)[-k:][::-1].astype(np.int64).copy()
                 rank_label = "mlp-residual-var-ranked"
             else:
                 rank_score = y.var(axis=0)
                 fit_y = y
+                k = min(self.tabpfn_top_k, y.shape[1])
+                top_k_idx = np.argsort(rank_score)[-k:][::-1].astype(np.int64).copy()
                 rank_label = "var-ranked"
 
-            k = min(self.tabpfn_top_k, y.shape[1])
-            top_k_idx = np.argsort(rank_score)[-k:][::-1].astype(np.int64).copy()
             self._top_k_indices = torch.from_numpy(top_k_idx)
 
             # In residual mode, hold out a slice of train to fit α_d.
@@ -174,6 +206,10 @@ class TabPFNHead(nn.Module):
             self._regressors = []
             alpha = np.ones(k, dtype=np.float32)
             n_pos_alpha = 0
+            print(
+                f"  Fitting TabPFN ({self.mode}, n_est={self.n_estimators}) "
+                f"on {k} dims (out of {y.shape[1]}; {rank_label})"
+            )
             for i, dim in enumerate(top_k_idx):
                 r = TabPFNRegressor(
                     device=device,
@@ -193,6 +229,10 @@ class TabPFNHead(nn.Module):
                     alpha[i] = a
                     if a > 0.05:
                         n_pos_alpha += 1
+                # Pure mode fits 1775 regressors per fold — surface progress so
+                # a long run doesn't look hung.
+                if self.mode == "pure" and (i + 1) % 50 == 0:
+                    print(f"    TabPFN fit: {i+1}/{k} dims")
             self._alpha = torch.from_numpy(alpha)
             self.is_fitted = True
             extra = ""
