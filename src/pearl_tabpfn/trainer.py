@@ -9,8 +9,9 @@ from tqdm import tqdm
 from typing import Dict, Tuple
 import os
 
-from pearl_models import PEaRL, ContrastiveLoss, SupervisedLoss
-from pearl_config import cfg
+from .baseline import PEaRL, SupervisedLoss
+from .encoders import ContrastiveLoss
+from .config import cfg
 
 
 class Trainer:

@@ -13,7 +13,7 @@ import seaborn as sns
 from pathlib import Path
 from typing import Dict, Tuple
 
-from pearl_models import PEaRL
+from .baseline import PEaRL
 
 
 class PEaRLEvaluator:

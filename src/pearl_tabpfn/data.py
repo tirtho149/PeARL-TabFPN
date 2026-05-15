@@ -4,7 +4,7 @@ import json
 import numpy as np
 import h5py
 from pathlib import Path
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image as PILImage
@@ -18,6 +18,95 @@ try:
     import scanpy as sc
 except ImportError:
     sc = None
+
+
+def _select_hvg(adata, X: np.ndarray, n_top: int, method: str = "dispersion") -> np.ndarray:
+    """Select top-`n_top` highly variable genes.
+
+    Order of preference:
+      1. `method="scanpy"` + scanpy installed → `sc.pp.highly_variable_genes(
+         flavor="seurat")` (what the PEaRL paper uses).
+      2. `method="seurat"` or scanpy missing → Seurat-flavor numpy fallback:
+         bin genes by mean, z-score variance within each bin, pick top.
+      3. `method="dispersion"` (legacy) → simple variance/mean ranking.
+
+    Returns:
+        ndarray of selected gene column indices (length min(n_top, n_genes)).
+    """
+    n_total = X.shape[1]
+    if n_top >= n_total:
+        return np.arange(n_total)
+
+    if method == "scanpy" and sc is not None:
+        # Scanpy expects an AnnData; we have one with X already log1p-norm'd.
+        try:
+            ad = adata.copy()
+            ad.X = X
+            sc.pp.highly_variable_genes(ad, n_top_genes=n_top, flavor="seurat")
+            keep = np.where(ad.var["highly_variable"].values)[0]
+            if len(keep) >= n_top:
+                return keep[:n_top]
+            print(f"  WARN: scanpy HVG returned {len(keep)} < {n_top}; padding.")
+            extra = np.setdiff1d(np.arange(n_total), keep)
+            return np.concatenate([keep, extra[: n_top - len(keep)]])
+        except Exception as e:
+            print(f"  scanpy HVG failed ({type(e).__name__}: {e}); using seurat numpy fallback.")
+            method = "seurat"
+
+    if method in ("scanpy", "seurat"):
+        # Seurat-flavor: bin genes by mean of log-normalized expression,
+        # z-score (variance/mean) within each bin, pick top by z.
+        means = X.mean(axis=0)
+        vars_ = X.var(axis=0)
+        valid = means > 1e-12
+        log_means = np.log10(means + 1e-12)
+        log_disp = np.log10(vars_ / (means + 1e-12) + 1e-12)
+        n_bins = 20
+        lo, hi = log_means[valid].min(), log_means[valid].max()
+        edges = np.linspace(lo - 1e-6, hi + 1e-6, n_bins + 1)
+        bin_idx = np.clip(np.digitize(log_means, edges) - 1, 0, n_bins - 1)
+        z = np.zeros(n_total, dtype=np.float32)
+        for b in range(n_bins):
+            m = (bin_idx == b) & valid
+            if m.sum() < 3:
+                continue
+            mu = log_disp[m].mean()
+            sd = log_disp[m].std() + 1e-12
+            z[m] = (log_disp[m] - mu) / sd
+        z[~valid] = -np.inf
+        return np.argsort(z)[-n_top:]
+
+    # Legacy: dispersion = var/mean
+    means = X.mean(axis=0)
+    vars_ = X.var(axis=0)
+    disp = vars_ / (means + 1e-6)
+    return np.argsort(disp)[-n_top:]
+
+
+def apply_spatial_smoothing(
+    expr: np.ndarray, coords: np.ndarray, k: int = 8
+) -> np.ndarray:
+    """K-nearest-neighbor (default 8) spatial smoothing of expression.
+
+    Each spot's gene vector is replaced by the unweighted mean of itself and
+    its k nearest spatial neighbors. Reduces spot-level dropout noise while
+    preserving local tissue structure. The PEaRL paper applies this as part
+    of preprocessing — apple-to-apple reproduction needs it.
+
+    Args:
+        expr:   (N, G) gene expression
+        coords: (N, 2) spatial coordinates in any units (kNN is invariant to scale)
+        k:      number of neighbors to average with (excludes self in the count)
+    """
+    from sklearn.neighbors import NearestNeighbors
+
+    n = expr.shape[0]
+    if n <= 1:
+        return expr.copy()
+    k_use = min(k, n - 1)
+    nn = NearestNeighbors(n_neighbors=k_use + 1, algorithm="ball_tree").fit(coords)
+    _, idx = nn.kneighbors(coords)  # (N, k+1); col 0 is self
+    return expr[idx].mean(axis=1).astype(expr.dtype, copy=False)
 
 
 def ssgsea(expr_matrix: np.ndarray, gene_names: List[str], pathways: Dict[str, List[str]]) -> np.ndarray:
@@ -78,7 +167,12 @@ def load_hest_sample(
     seed: int = 42,
     normalization: str = "pearl_orig",
     pathway_dict: Dict[str, List[str]] = None,
+    pathway_sources: str = "reactome",
     return_full_pathways: bool = False,
+    smooth_genes: bool = False,
+    smoothing_k: int = 8,
+    min_spots_detected: int = 0,
+    hvg_method: str = "dispersion",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load one HEST-1k sample: patches, gene expression, pathway scores, spatial coords.
@@ -134,16 +228,42 @@ def load_hest_sample(
     if hasattr(X, "toarray"):
         X = X.toarray()
     X = np.asarray(X, dtype=np.float32)
+
+    # Paper-faithful gene filter: drop genes detected (count > 0) in fewer
+    # than `min_spots_detected` spots BEFORE CP10K normalization. The PEaRL
+    # paper says "filtered out genes detected in fewer than 1,000 spots".
+    # Doing this pre-CP10K (rather than post-log1p) matches the Scanpy
+    # convention `sc.pp.filter_genes(adata, min_cells=N)`.
+    if min_spots_detected > 0 and X.shape[1] > 0:
+        n_detected = (X > 0).sum(axis=0)
+        keep = n_detected >= min_spots_detected
+        if keep.sum() == 0:
+            print(
+                f"  WARN: min_spots_detected={min_spots_detected} kept 0 genes "
+                f"on {sample_id}; relaxing to keep all genes."
+            )
+        else:
+            n_drop = (~keep).sum()
+            if n_drop > 0:
+                X = X[:, keep]
+                adata = adata[:, keep].copy()
+                # print(f"  filter: dropped {n_drop}/{n_drop+keep.sum()} genes "
+                #       f"(detected in <{min_spots_detected} spots)")
+
     X = X / (X.sum(axis=1, keepdims=True) + 1e-10) * 1e4
     X = np.log1p(X)
+
+    # Optional 8-neighbor spatial smoothing on the (CP10K + log1p) matrix.
+    # Paper applies this before HVG selection; doing it earlier here also lets
+    # the variance-based HVG ranking reflect the smoothed signal.
+    if smooth_genes:
+        xy_for_smooth = np.asarray(adata.obsm["spatial"], dtype=np.float32)
+        X = apply_spatial_smoothing(X, xy_for_smooth, k=smoothing_k)
     adata.X = X
 
-    # HVG selection (numpy-based)
-    X_dense = adata.X.toarray() if hasattr(adata.X, "toarray") else adata.X
-    means = X_dense.mean(axis=0)
-    vars = X_dense.var(axis=0)
-    disp = vars / (means + 1e-6)
-    top_genes = np.argsort(disp)[-n_genes:]
+    # HVG selection — prefer scanpy when available (matches paper exactly),
+    # fall back to a Seurat-flavor numpy implementation otherwise.
+    top_genes = _select_hvg(adata, X, n_genes, method=hvg_method)
     adata = adata[:, top_genes].copy()
 
     # Get gene matrix
@@ -160,8 +280,12 @@ def load_hest_sample(
         genes = genes[:, :n_genes].copy()
         n_genes_actual = n_genes
 
-    # Pathway scoring on real Reactome pathway definitions.
-    pathways_dict = pathway_dict if pathway_dict is not None else _load_pathways_from_reactome()
+    # Pathway scoring on real pathway definitions.
+    pathways_dict = (
+        pathway_dict
+        if pathway_dict is not None
+        else _load_pathways(sources=pathway_sources)
+    )
     pathway_scores = ssgsea(genes[:, :n_genes_actual], gene_names[:n_genes_actual], pathways_dict)
 
     if normalization == "paper":
@@ -225,6 +349,12 @@ def load_hest_multi_sample(
     normalization: str = "paper",
     seed: int = 42,
     verbose: bool = True,
+    pathway_sources: str = "reactome",
+    pathway_normalization: str = "zscore",
+    smooth_genes: bool = False,
+    smoothing_k: int = 8,
+    min_spots_detected: int = 0,
+    hvg_method: str = "dispersion",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load and concatenate multiple HEST-1k sections.
@@ -241,9 +371,9 @@ def load_hest_multi_sample(
         coords:      (total_spots, 2) float32 (per-section [0,1] normalized)
         section_ids: (total_spots,) int64 — same index for spots from same section
     """
-    pathway_dict = _load_pathways_from_reactome()
+    pathway_dict = _load_pathways(sources=pathway_sources)
     if verbose:
-        print(f"Reactome pathways loaded: {len(pathway_dict)}")
+        print(f"Pathways loaded ({pathway_sources}): {len(pathway_dict)}")
 
     parts = []
     for i, sid in enumerate(sample_ids):
@@ -259,6 +389,10 @@ def load_hest_multi_sample(
                 normalization=normalization,
                 pathway_dict=pathway_dict,
                 return_full_pathways=True,
+                smooth_genes=smooth_genes,
+                smoothing_k=smoothing_k,
+                min_spots_detected=min_spots_detected,
+                hvg_method=hvg_method,
             )
         except Exception as e:
             if verbose:
@@ -279,21 +413,31 @@ def load_hest_multi_sample(
         [np.full(t[0].shape[0], t[4], dtype=np.int64) for t in parts]
     )
 
-    # Global top-N pathway selection by pooled variance, then z-normalize on
-    # the pooled selected columns (load_hest_sample left the full matrix raw
-    # when return_full_pathways=True).
+    # Global top-N pathway selection by pooled variance. The PEaRL paper's
+    # reported pathway MSE (~0.0017 on Breast) implies raw-ssGSEA scaling
+    # (std ≈ 0.05). z-normalization (std=1) inflates MSE by ~400× — PCC is
+    # scale-invariant per-dim but not in the global flatten metric. Use 'raw'
+    # for apple-to-apple parity with the paper.
     col_std = pw_full.std(axis=0)
     keep = np.argsort(col_std)[-n_pathways:][::-1]
     pathways = pw_full[:, keep]
-    pathways = (
-        (pathways - pathways.mean(0)) / (pathways.std(0) + 1e-6)
-    ).astype(np.float32)
+    if pathway_normalization == "zscore":
+        pathways = (
+            (pathways - pathways.mean(0)) / (pathways.std(0) + 1e-6)
+        ).astype(np.float32)
+    elif pathway_normalization == "raw":
+        pathways = pathways.astype(np.float32)
+    else:
+        raise ValueError(
+            f"pathway_normalization must be 'raw' or 'zscore', got {pathway_normalization!r}"
+        )
 
     if verbose:
         print(
             f"Pooled: {patches.shape[0]} spots, {len(parts)} sections, "
             f"genes {genes.shape}, pathways {pathways.shape} "
-            f"(picked top-{n_pathways} of {pw_full.shape[1]})"
+            f"(picked top-{n_pathways} of {pw_full.shape[1]}, scale={pathway_normalization}, "
+            f"smoothing={'on' if smooth_genes else 'off'})"
         )
 
     return patches, genes, pathways, coords, section_ids
@@ -434,6 +578,15 @@ def _process_patch(img: np.ndarray, size: int) -> np.ndarray:
 
 
 _REACTOME_GMT_URL = "https://reactome.org/download/current/ReactomePathways.gmt.zip"
+# MSigDB Hallmark gene sets (50 well-curated cancer pathways). The PEaRL paper
+# uses Reactome + MSigDB; without Hallmark, ~50 high-signal cancer pathways are
+# missing from the pool that ssGSEA + variance ranking can pick from.
+_MSIGDB_HALLMARK_URLS = (
+    # Primary: GitHub-hosted GMT (no auth required).
+    "https://raw.githubusercontent.com/igordot/msigdb/main/data/h.all.v2023.1.Hs.symbols.gmt",
+    # Mirror.
+    "https://raw.githubusercontent.com/RasmussenLab/msigdb-mirror/master/h.all.v7.5.1.symbols.gmt",
+)
 _PATHWAY_CACHE_DIR = os.environ.get("PEARL_PATHWAY_CACHE", "./pathway_data")
 
 
@@ -501,6 +654,75 @@ def _load_pathways_from_reactome(
                 if min_genes <= len(genes) <= max_genes:
                     pathways[name] = genes
 
+    return pathways
+
+
+def _load_pathways_msigdb_hallmark(
+    cache_dir: str = None,
+    min_genes: int = 5,
+    max_genes: int = 500,
+) -> Dict[str, List[str]]:
+    """Load MSigDB Hallmark gene sets (50 cancer-relevant pathways).
+
+    Tries each URL in `_MSIGDB_HALLMARK_URLS` in order; on persistent failure
+    returns an empty dict and prints a warning, so callers can fall back to
+    Reactome-only. The Hallmark collection is small (~50 sets) but very
+    high-signal for oncology spatial transcriptomics — paper uses it.
+    """
+    import urllib.request
+
+    cache_dir = cache_dir or _PATHWAY_CACHE_DIR
+    os.makedirs(cache_dir, exist_ok=True)
+    gmt_path = os.path.join(cache_dir, "msigdb_hallmark.gmt")
+
+    if not os.path.isfile(gmt_path):
+        last_err = None
+        for url in _MSIGDB_HALLMARK_URLS:
+            try:
+                print(f"Downloading MSigDB Hallmark from {url} ...")
+                urllib.request.urlretrieve(url, gmt_path)
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        else:
+            print(
+                f"WARNING: failed to download MSigDB Hallmark "
+                f"({type(last_err).__name__}: {last_err}); using Reactome only."
+            )
+            return {}
+
+    pathways: Dict[str, List[str]] = {}
+    with open(gmt_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3:
+                continue
+            name = parts[0]
+            genes = [g.strip() for g in parts[2:] if g.strip()]
+            if min_genes <= len(genes) <= max_genes:
+                pathways[name] = genes
+    return pathways
+
+
+def _load_pathways(
+    sources: str = "reactome",
+    cache_dir: str = None,
+) -> Dict[str, List[str]]:
+    """Load pathway gene sets from the configured sources.
+
+    sources='reactome'           — Reactome only (legacy default).
+    sources='reactome_msigdb'    — Reactome + MSigDB Hallmark (paper-faithful).
+                                   MSigDB names are prefixed with 'HALLMARK_' so
+                                   they don't collide with Reactome names.
+    """
+    pathways = _load_pathways_from_reactome(cache_dir=cache_dir)
+    if sources == "reactome_msigdb":
+        hall = _load_pathways_msigdb_hallmark(cache_dir=cache_dir)
+        for name, genes in hall.items():
+            key = name if name.upper().startswith("HALLMARK") else f"HALLMARK_{name}"
+            pathways[key] = genes
+        print(f"  Reactome + MSigDB Hallmark combined: {len(pathways)} pathways")
     return pathways
 
 
