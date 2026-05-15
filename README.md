@@ -16,18 +16,28 @@ A controlled head-to-head benchmark of **PEaRL+MLP** vs **PEaRL+TabPFN** on the 
 
 Outputs feed the IEEE BIBM 2026 paper draft in `paper/BIBM2026_PEaRL_TabPFN.tex`.
 
-## Dataset
+## Datasets
+
+The codebase recognizes three HEST-1k cohorts via `cfg.HEST_IDS` and `cfg.DATASET_PATHWAYS` in `src/pearl_tabpfn/config.py`. Each cohort uses a different anchor section, pathway pool, and pathway-count target taken from the PEaRL paper.
+
+| Cohort | HEST anchor | Pathway count | Env-var override |
+|---|---|---|---|
+| **Breast** (BIBM-2026 canonical) | `TENX99` | 775 (Reactome + MSigDB Hallmark) | `HEST_ID_BREAST` |
+| Skin | `TENX158` | 609 | `HEST_ID_SKIN` |
+| Lymph node | `TENX143` | 1100 | `HEST_ID_LYMPH` |
+
+**What is actually wired end-to-end:** only **Breast**. The current 5-fold CV runner (`src/pearl_tabpfn/reproduction.py`) filters HEST-v1.1 rows by `organ == "Breast"`, and the SLURM scripts in `slurm/` hard-code `--n-sections 36` against the Breast pool. Skin and Lymph are declared so `pearl_tabpfn.figures.figure5_pathway_counts` can label the per-cohort bar plot referenced in the paper draft, and so future cohort wiring can drop in without re-touching `config.py`. Until that wiring lands, treat the entries above as a roadmap, not an SBATCH target.
+
+**Per-section protocol (applies to the Breast run today; identical knobs will apply to Skin/Lymph once wired):**
 
 | Item | Value |
 |---|---|
-| Dataset | **HEST-1k** (`MahmoodLab/hest` on HuggingFace, gated) |
-| Cohort | Breast cancer Visium spatial transcriptomics |
+| Source | **HEST-1k** (`MahmoodLab/hest` on HuggingFace, gated) |
 | Sections used | 36 (deterministically picked from the 117 available Breast rows in `HEST_v1_1_0.csv`) |
-| Section ID example | `TENX99` (Breast — `cfg.HEST_IDS["Breast"]`) |
 | Per-section input | `hest_data/st/{id}.h5ad` (expression) + `hest_data/patches/{id}.h5` (224×224 H&E patches) |
 | Spots per section (cap) | 400 default, `--max-spots-per-section` |
 | Genes | top-1000 HVGs by pooled variance, Scanpy `flavor="seurat"` |
-| Pathways | 775 (Reactome + MSigDB Hallmark), ssGSEA-scored per spot |
+| Pathway scoring | ssGSEA per spot |
 | Total payload to download | **~45 GB** for the Breast cohort (incl. WSI patches) |
 | Foundation backbone | **UNI v1** (`MahmoodLab/UNI`, gated DINOv2 ViT-L/16 on 100k WSIs) |
 | Spatial coords | 2-D, included with every spot |
