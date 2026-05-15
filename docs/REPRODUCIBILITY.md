@@ -47,6 +47,23 @@ Runs `scripts/validate.py`. Exercises every code path with stub data — NO
 PCC numbers produced, only a pass/fail on whether the pipeline is wired
 correctly. Must pass before launching the expensive training jobs.
 
+## 3.5 One-command chain (optional)
+
+If you want to submit everything in a single dependency chain rather
+than babysit each phase:
+
+```bash
+PEARL_REPO=$PWD bash slurm/submit_all.sh
+```
+
+This queues `00 → 01 → 02 → 03 → 04 → 06` with `--dependency=afterok`,
+so each phase starts automatically when its predecessor succeeds. Each
+phase still gets its own allocation (CPU-only phases do not hold a
+GPU). Pass `--bundled` to swap 03+04 for the single-job 05;
+`--skip-install` / `--skip-download` skip phases whose outputs are
+already in place; `--dry-run` prints the sbatch commands without
+submitting them.
+
 ## 4. Run the head-to-head (Phase 03/04 or 05)
 
 **Option A — split into two SLURM jobs** (recommended; lets the cheaper

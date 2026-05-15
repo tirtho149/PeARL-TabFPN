@@ -53,25 +53,34 @@ Then in a browser, accept the gating terms at:
 - https://huggingface.co/datasets/MahmoodLab/hest
 - https://huggingface.co/MahmoodLab/UNI
 
-### 1. Submit the seven phases
+### 1. Submit everything as a dependency chain (one command)
 
 ```bash
-# Phase 00 — venv + editable package install (CPU, ~5 min, 4 cpu / 16 GB)
-PEARL_REPO=$PWD sbatch slurm/00_install.sh
+# Queues all seven phases with --dependency=afterok so SLURM runs them
+# sequentially as each predecessor succeeds. Each phase gets its own
+# allocation — CPU-only phases (00/01/02) do not hold a GPU.
+PEARL_REPO=$PWD bash slurm/submit_all.sh
+```
 
-# Phase 01 — download HEST-1k Breast cohort (CPU, ~30 min, ~45 GB pulled)
-PEARL_REPO=$PWD sbatch slurm/01_download_data.sh
+Useful flags:
 
-# Phase 02 — structural validation on stub data (CPU, ~1 min)
-PEARL_REPO=$PWD sbatch slurm/02_validate.sh
+```bash
+bash slurm/submit_all.sh --bundled            # use slurm/05_train_head_to_head.sh instead of 03+04
+bash slurm/submit_all.sh --skip-install       # skip 00 if venv already exists
+bash slurm/submit_all.sh --skip-download      # skip 01 if hest_data/ is already populated
+bash slurm/submit_all.sh --dry-run            # print the sbatch commands without submitting
+```
 
-# Phase 03 — PEaRL+MLP baseline, 5-fold CV (GPU, ~7 hr on A100/RTX 3090)
-PEARL_REPO=$PWD sbatch slurm/03_train_baseline.sh
+The script prints the full chain of job IDs at the end; cancel the whole pipeline with `scancel <jobid> <jobid> ...` (dependents auto-cancel).
 
-# Phase 04 — PEaRL+TabPFN, 5-fold CV (GPU, ~45 hr — the long one)
-PEARL_REPO=$PWD sbatch slurm/04_train_tabpfn.sh
+### 2. Or submit phases individually
 
-# Phase 06 — render head-to-head BIBM figures (GPU, ~2 min)
+```bash
+PEARL_REPO=$PWD sbatch slurm/00_install.sh         # CPU, ~5 min
+PEARL_REPO=$PWD sbatch slurm/01_download_data.sh   # CPU, ~30 min, ~45 GB
+PEARL_REPO=$PWD sbatch slurm/02_validate.sh        # CPU, ~1 min
+PEARL_REPO=$PWD sbatch slurm/03_train_baseline.sh  # GPU, ~7 hr
+PEARL_REPO=$PWD sbatch slurm/04_train_tabpfn.sh    # GPU, ~45 hr
 PEARL_REPO=$PWD sbatch slurm/06_generate_figures.sh
 ```
 
@@ -79,7 +88,7 @@ PEARL_REPO=$PWD sbatch slurm/06_generate_figures.sh
 
 Every job emails `tirtho@iastate.edu` on BEGIN / END / FAIL (edit the `--mail-user` line in `slurm/*.sh` for a different recipient). Logs land in `logs/pearl_<job>-<jobid>.{out,err}`.
 
-### 2. Total wall-clock budget
+### 3. Total wall-clock budget
 
 Recommended GPU: **24 GB NVIDIA A100 / RTX 3090 / TITAN RTX**. 16 GB cards work with `--batch-size 64`.
 
@@ -96,7 +105,7 @@ Recommended GPU: **24 GB NVIDIA A100 / RTX 3090 / TITAN RTX**. 16 GB cards work 
 
 If you start Phase 00 on a Monday morning and queue all jobs as a dependency chain, expect head-to-head figures to be ready by Thursday morning. On smaller GPUs (16 GB) add ~30% to Phases 03–05.
 
-### 3. Outputs
+### 4. Outputs
 
 ```
 reproduction_results/
