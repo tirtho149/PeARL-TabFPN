@@ -603,6 +603,7 @@ def _load_pathways_from_reactome(
     too noisy (small sets) or too generic (e.g., "Metabolism", >500 genes) for
     ssGSEA to be informative.
     """
+    import pathlib
     import zipfile
     import urllib.request
 
@@ -622,7 +623,17 @@ def _load_pathways_from_reactome(
                     break
             else:
                 z.extractall(cache_dir)
-        os.remove(zip_path)
+        # missing_ok: the zip may already be gone (concurrent job, scratch-fs
+        # cleanup) — the .gmt above is what matters, so don't crash on removal.
+        pathlib.Path(zip_path).unlink(missing_ok=True)
+
+        if not os.path.isfile(gmt_path):
+            raise RuntimeError(
+                f"Reactome GMT missing at {gmt_path} after downloading "
+                f"{_REACTOME_GMT_URL}: the archive did not contain "
+                f"'ReactomePathways.gmt'. Check network access, or pre-stage "
+                f"the .gmt file into {cache_dir}."
+            )
 
     pathways: Dict[str, List[str]] = {}
     with open(gmt_path, "r", encoding="utf-8", errors="replace") as f:

@@ -38,6 +38,11 @@ class Config:
     # Hardware
     USE_AMP: bool = os.environ.get("PEARL_NO_AMP", "").strip() not in ("1", "true", "yes")
     USE_IMAGENET_PRETRAIN: bool = os.environ.get("PEARL_SCRATCH_ENCODERS", "").strip() not in ("1", "true", "yes")
+    # Disable the cuDNN backend. Works around clusters where cuDNN cannot find a
+    # convolution engine for the ViT patch-embed conv ("unable to find an engine
+    # to execute this computation"); a ViT's only conv is the patch projection,
+    # so the native fallback costs almost nothing.
+    DISABLE_CUDNN: bool = os.environ.get("PEARL_DISABLE_CUDNN", "").strip() in ("1", "true", "yes")
 
     # Dataset names & pathways per dataset
     DATASETS: List[str] = None

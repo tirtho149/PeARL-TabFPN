@@ -949,6 +949,10 @@ def main():
                    help="Quick mode: 5 sections, 2 folds, 5 epochs.")
     args = p.parse_args()
 
+    if cfg.DISABLE_CUDNN:
+        torch.backends.cudnn.enabled = False
+        print("[runtime] cuDNN disabled (PEARL_DISABLE_CUDNN set)")
+
     if args.apple_to_apple:
         # Bundle: every setting that brings the run into parity with arXiv:2510.03455.
         args.smooth_genes = True
