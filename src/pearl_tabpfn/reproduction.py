@@ -818,6 +818,46 @@ PAPER_BASELINE_BREAST = {
 }
 
 
+def _configure_cudnn() -> None:
+    """Fall back off cuDNN when it cannot service the ViT patch-embed conv.
+
+    Some HPC GPUs ship a cuDNN build whose heuristics return no engine for a
+    conv2d ("GET was unable to find an engine to execute this computation").
+    A ViT's only conv is the patch projection, so the native fallback costs
+    almost nothing. PEARL_DISABLE_CUDNN=1 forces the fallback without probing.
+    """
+    if not torch.cuda.is_available():
+        return
+
+    def _conv_probe() -> None:
+        x = torch.randn(1, 3, 8, 8, device="cuda")
+        w = torch.randn(4, 3, 3, 3, device="cuda")
+        torch.nn.functional.conv2d(x, w)
+        torch.cuda.synchronize()
+
+    if cfg.DISABLE_CUDNN:
+        torch.backends.cudnn.enabled = False
+        print("[runtime] cuDNN disabled (PEARL_DISABLE_CUDNN set)")
+        return
+
+    try:
+        _conv_probe()
+        return
+    except RuntimeError as e:
+        torch.backends.cudnn.enabled = False
+        print(f"[runtime] cuDNN conv probe failed -> disabled cuDNN ({e})")
+
+    try:
+        _conv_probe()
+    except RuntimeError as e:
+        raise RuntimeError(
+            "conv2d fails on this GPU even with cuDNN disabled -- this is a "
+            "PyTorch/CUDA build mismatch, not a cuDNN issue. Reinstall torch "
+            "with a CUDA build matching the cluster, e.g.: pip install torch "
+            "torchvision --index-url https://download.pytorch.org/whl/cu121"
+        ) from e
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", default="./hest_data")
@@ -949,9 +989,7 @@ def main():
                    help="Quick mode: 5 sections, 2 folds, 5 epochs.")
     args = p.parse_args()
 
-    if cfg.DISABLE_CUDNN:
-        torch.backends.cudnn.enabled = False
-        print("[runtime] cuDNN disabled (PEARL_DISABLE_CUDNN set)")
+    _configure_cudnn()
 
     if args.apple_to_apple:
         # Bundle: every setting that brings the run into parity with arXiv:2510.03455.
