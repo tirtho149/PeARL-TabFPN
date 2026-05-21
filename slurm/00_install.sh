@@ -34,6 +34,16 @@ fi
 
 source "$PEARL_VENV/bin/activate"
 python -m pip install --upgrade pip wheel
+
+# Pin torch to a CUDA build that ships Volta (sm_70) kernels — Nova's GPU
+# nodes include Tesla V100s, and recent default-PyPI torch wheels dropped
+# sm_70 support (every CUDA op then fails with cudaErrorNoKernelImageForDevice).
+# 2.5.1+cu121 is the README-tested combo and covers sm_70..sm_90.
+pip install torch==2.5.1 torchvision==0.20.1 \
+  --index-url https://download.pytorch.org/whl/cu121
+
+# Installs the rest of the deps; torch above already satisfies the pin so
+# pip leaves it untouched.
 pip install -e .
 
 echo "[install] verifying pearl_tabpfn import"
