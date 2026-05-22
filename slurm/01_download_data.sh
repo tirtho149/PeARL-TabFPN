@@ -19,6 +19,9 @@
 # HF_TOKEN / HUGGINGFACE_HUB_TOKEN in .env (gated dataset).
 
 set -euo pipefail
+# Force unbuffered Python output so progress lands in the log in real time
+# instead of only flushing when the job ends.
+export PYTHONUNBUFFERED=1
 PEARL_REPO="${PEARL_REPO:-$PWD}"
 PEARL_VENV="${PEARL_VENV:-$PEARL_REPO/venv}"
 cd "$PEARL_REPO"
