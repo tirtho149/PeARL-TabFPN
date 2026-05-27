@@ -12,6 +12,13 @@ __pycache__/
 env/
 venv/
 .venv
+.smoke_venv/
+
+# Smoke-test scratch data (TCGA WSIs, clinical TSVs — pulled by scripts/smoke_survival.py)
+tcga_smoke/
+
+# WACV results dirs
+wacv_results/
 
 # Virtual environments
 .env

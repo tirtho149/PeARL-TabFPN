@@ -30,16 +30,27 @@ import numpy as np
 
 
 HEST_DIR = os.environ.get("HEST_DATA_ROOT", "./hest_data")
-SAMPLE_IDS_TO_CHECK = ["TENX99"]  # Breast IDC, paper-canonical; extend if more
+# All three WACV cohorts (Breast / Skin / Lymph). Override per-cohort via
+# HEST_ID_{BREAST,SKIN,LYMPH} env vars (matches pearl_tabpfn.config.cfg.HEST_IDS).
+SAMPLE_IDS_TO_CHECK = [
+    ("Breast", os.environ.get("HEST_ID_BREAST", "TENX99")),
+    ("Skin", os.environ.get("HEST_ID_SKIN", "TENX158")),
+    ("Lymph", os.environ.get("HEST_ID_LYMPH", "TENX143")),
+]
 
 
 def fmt(x: float) -> str:
     return f"{x:.4f}"
 
 
-def check_section(sample_id: str) -> dict:
+def check_section(cohort: str, sample_id: str) -> dict:
     """Load one section under apple-to-apple settings and return stats."""
     from pearl_tabpfn.data import load_hest_sample
+    from pearl_tabpfn.config import cfg
+
+    # Per-cohort pathway target (Breast 775, Skin 609, Lymph 1100). Smoke
+    # capped to 200 to keep the verification under 1 min/cohort.
+    n_pathways_full = cfg.DATASET_PATHWAYS.get(cohort, 200)
 
     t0 = time.time()
     patches, genes, pathways, coords = load_hest_sample(
@@ -58,7 +69,9 @@ def check_section(sample_id: str) -> dict:
     elapsed = time.time() - t0
 
     return {
+        "cohort": cohort,
         "sample_id": sample_id,
+        "n_pathways_paper": n_pathways_full,
         "elapsed_s": elapsed,
         "patches_shape": tuple(patches.shape),
         "genes_shape": tuple(genes.shape),
@@ -130,16 +143,18 @@ def main() -> int:
     print(f"  patches/ → {len(list(patches_dir.glob('*.h5')))} h5 files")
     print()
 
-    # ---- Load each section under apple-to-apple settings ----
+    # ---- Load each cohort under apple-to-apple settings ----
     all_stats = []
-    for sid in SAMPLE_IDS_TO_CHECK:
+    missing = []
+    for cohort, sid in SAMPLE_IDS_TO_CHECK:
         st_file = st_dir / f"{sid}.h5ad"
         if not st_file.exists():
-            print(f"SKIP {sid}: no {st_file} — section not in this HEST snapshot.")
+            print(f"SKIP {cohort} ({sid}): no {st_file} — section not in this HEST snapshot.")
+            missing.append((cohort, sid))
             continue
-        print(f"Loading {sid} under apple-to-apple settings ...")
+        print(f"Loading {cohort} ({sid}) under apple-to-apple settings ...")
         try:
-            stats = check_section(sid)
+            stats = check_section(cohort, sid)
         except Exception as e:
             import traceback
             print(f"  FAIL: {type(e).__name__}: {e}")
@@ -152,7 +167,8 @@ def main() -> int:
         print(f"    genes    : {stats['genes_shape']} {stats['genes_dtype']}, "
               f"mean={fmt(stats['gene_mean'])}, std={fmt(stats['gene_std'])}, "
               f"range=[{fmt(stats['gene_min'])}, {fmt(stats['gene_max'])}]")
-        print(f"    pathways : {stats['pathways_shape']}, "
+        print(f"    pathways : {stats['pathways_shape']} "
+              f"(paper target: {stats['n_pathways_paper']}), "
               f"mean={fmt(stats['pathway_mean'])}, std={fmt(stats['pathway_std'])}, "
               f"range=[{fmt(stats['pathway_min'])}, {fmt(stats['pathway_max'])}]")
         print(f"    coords   : range [{fmt(stats['coord_min'])}, {fmt(stats['coord_max'])}]")
@@ -165,49 +181,61 @@ def main() -> int:
     if not all_stats:
         print("FAIL: no sections loaded. HEST snapshot may be incomplete.")
         return 1
-
-    # ---- Sanity assertions on the first loaded section ----
-    s = all_stats[0]
-    failures = []
-    if s["gene_nan_count"] > 0:
-        failures.append(f"gene_nan_count={s['gene_nan_count']} (must be 0)")
-    if s["pathway_nan_count"] > 0:
-        failures.append(f"pathway_nan_count={s['pathway_nan_count']} (must be 0)")
-    if s["gene_std"] < 1e-6:
-        failures.append(f"gene_std={s['gene_std']} ≈ 0 → all genes constant (suspect synthetic)")
-    if s["pathway_std"] < 1e-6:
-        failures.append(f"pathway_std={s['pathway_std']} ≈ 0 (suspect synthetic)")
-    if s["gene_min"] == s["gene_max"]:
-        failures.append("genes have zero range (suspect synthetic)")
-    # 'paper' normalization clips to [0, 1].
-    if not (-0.01 <= s["gene_min"] and s["gene_max"] <= 1.01):
-        failures.append(
-            f"gene range [{s['gene_min']}, {s['gene_max']}] outside [0,1] — "
-            f"normalization='paper' should min-max scale per-gene"
+    if missing:
+        print(
+            f"WARNING: {len(missing)} cohort(s) missing from snapshot: "
+            + ", ".join(f"{c}({s})" for c, s in missing)
         )
+        print("  These cohorts will fail at run time. Re-run SETUP_DATA.sh "
+              "or set HEST_ID_{BREAST,SKIN,LYMPH} to a TENX id that is present.\n")
 
-    # ---- Run compute_metrics on real targets ----
+    # ---- Sanity assertions on every loaded cohort ----
+    failures = []
+    for s in all_stats:
+        cohort = s["cohort"]
+        if s["gene_nan_count"] > 0:
+            failures.append(f"[{cohort}] gene_nan_count={s['gene_nan_count']} (must be 0)")
+        if s["pathway_nan_count"] > 0:
+            failures.append(f"[{cohort}] pathway_nan_count={s['pathway_nan_count']} (must be 0)")
+        if s["gene_std"] < 1e-6:
+            failures.append(f"[{cohort}] gene_std={s['gene_std']} ≈ 0 → all genes constant (suspect synthetic)")
+        if s["pathway_std"] < 1e-6:
+            failures.append(f"[{cohort}] pathway_std={s['pathway_std']} ≈ 0 (suspect synthetic)")
+        if s["gene_min"] == s["gene_max"]:
+            failures.append(f"[{cohort}] genes have zero range (suspect synthetic)")
+        # 'paper' normalization clips to [0, 1].
+        if not (-0.01 <= s["gene_min"] and s["gene_max"] <= 1.01):
+            failures.append(
+                f"[{cohort}] gene range [{s['gene_min']}, {s['gene_max']}] outside [0,1] — "
+                f"normalization='paper' should min-max scale per-gene"
+            )
+
+    # ---- Run compute_metrics on real targets (every loaded cohort) ----
     print("Running compute_metrics on a noisy-mean baseline predictor ...")
-    print("(Real PCC infrastructure check; expect 0 < PCC < 1, both targets.)")
+    print("(Real PCC infrastructure check; expect 0 < PCC < 1, both targets, per cohort.)")
     print()
     from pearl_tabpfn.data import load_hest_sample
-    patches, genes, pathways, coords = load_hest_sample(
-        hest_dir=HEST_DIR, sample_id=SAMPLE_IDS_TO_CHECK[0],
-        n_genes=1000, n_pathways=200, max_spots=200, seed=42,
-        normalization="paper", pathway_sources="reactome_msigdb",
-        smooth_genes=True,
-    )
-    bm = baseline_pcc(genes, pathways)
-    for target in ("gene", "pathway"):
-        m = bm[target]
-        print(f"  {target:8s}: PCC={fmt(m['PCC'])}  "
-              f"PCC_per_dim={fmt(m['PCC_per_dim_mean'])}  "
-              f"MSE={fmt(m['MSE'])}  MAE={fmt(m['MAE'])}  "
-              f"cols_used={m['n_cols_used']} dropped={m['n_cols_dropped']}")
-        if not (0 < m["PCC"] < 1):
-            failures.append(f"{target} PCC={m['PCC']} outside (0, 1) — predictor is degenerate")
-        if m["n_cols_used"] == 0:
-            failures.append(f"{target}: all columns dropped — pathway/gene data is empty")
+    for cohort, sid in SAMPLE_IDS_TO_CHECK:
+        if not (st_dir / f"{sid}.h5ad").exists():
+            continue
+        patches, genes, pathways, coords = load_hest_sample(
+            hest_dir=HEST_DIR, sample_id=sid,
+            n_genes=1000, n_pathways=200, max_spots=200, seed=42,
+            normalization="paper", pathway_sources="reactome_msigdb",
+            smooth_genes=True,
+        )
+        bm = baseline_pcc(genes, pathways)
+        print(f"  {cohort} ({sid}):")
+        for target in ("gene", "pathway"):
+            m = bm[target]
+            print(f"    {target:8s}: PCC={fmt(m['PCC'])}  "
+                  f"PCC_per_dim={fmt(m['PCC_per_dim_mean'])}  "
+                  f"MSE={fmt(m['MSE'])}  MAE={fmt(m['MAE'])}  "
+                  f"cols_used={m['n_cols_used']} dropped={m['n_cols_dropped']}")
+            if not (0 < m["PCC"] < 1):
+                failures.append(f"[{cohort}] {target} PCC={m['PCC']} outside (0, 1) — predictor is degenerate")
+            if m["n_cols_used"] == 0:
+                failures.append(f"[{cohort}] {target}: all columns dropped — pathway/gene data is empty")
 
     print()
     print("=" * 70)
@@ -216,13 +244,19 @@ def main() -> int:
         for f in failures:
             print(f"  • {f}")
         return 1
-    print("VERIFICATION PASSED.")
-    print("  • Real HEST sections loaded (no synthetic fallback).")
-    print("  • Gene + pathway arrays have non-trivial biological variance.")
-    print("  • Apple-to-apple data settings (smoothing, MSigDB, raw scale, paper gene norm) all work.")
-    print("  • compute_metrics returns real PCC numbers on real targets.")
+    status = "PASSED" if not missing else "PARTIAL"
+    print(f"VERIFICATION {status} for {len(all_stats)}/{len(SAMPLE_IDS_TO_CHECK)} cohort(s).")
+    for s in all_stats:
+        print(f"  • {s['cohort']:7s} ({s['sample_id']}): "
+              f"{s['genes_shape'][0]} spots, {s['genes_shape'][1]} genes, "
+              f"{s['pathways_shape'][1]} pathways")
+    print("  Apple-to-apple data settings (smoothing, MSigDB, raw scale, paper gene norm) all work.")
+    print("  compute_metrics returns real PCC numbers on real targets.")
+    if missing:
+        print(f"  NOTE: {len(missing)} cohort(s) missing from snapshot — "
+              "WACV needs all three. Re-run SETUP_DATA.sh or fix HEST_ID_* env vars.")
     print("=" * 70)
-    return 0
+    return 0 if not missing else 2
 
 
 if __name__ == "__main__":

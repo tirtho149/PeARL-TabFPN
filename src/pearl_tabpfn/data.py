@@ -235,20 +235,37 @@ def load_hest_sample(
     # Doing this pre-CP10K (rather than post-log1p) matches the Scanpy
     # convention `sc.pp.filter_genes(adata, min_cells=N)`.
     if min_spots_detected > 0 and X.shape[1] > 0:
-        n_detected = (X > 0).sum(axis=0)
-        keep = n_detected >= min_spots_detected
-        if keep.sum() == 0:
+        # KNOWN LIMITATION: the PEaRL paper applies this filter on the
+        # POOLED dataset ("filtered out genes detected in fewer than
+        # 1,000 spots"). Per-section the threshold is hit < 1× because
+        # each section has at most `max_spots` (default 400) spots —
+        # see logs/pearl_train_baseline-10678067.out where the
+        # "kept 0 genes ... relaxing" warning fires on all 36 sections.
+        # Until load_hest_multi_sample is refactored to filter on the
+        # pooled matrix, we silently no-op here but emit a stable
+        # marker so downstream tooling can detect the degraded state.
+        n_spots, n_genes_section = X.shape
+        if n_spots < min_spots_detected:
             print(
-                f"  WARN: min_spots_detected={min_spots_detected} kept 0 genes "
-                f"on {sample_id}; relaxing to keep all genes."
+                f"  NOTE[min_spots]: {sample_id} has {n_spots} spots "
+                f"< threshold {min_spots_detected} — per-section filter "
+                f"impossible to satisfy. No filtering applied to this "
+                f"section. (Apply the pooled-filter refactor for paper "
+                f"parity; see docs/REPRODUCIBILITY_FIXES.md.)"
             )
         else:
-            n_drop = (~keep).sum()
-            if n_drop > 0:
-                X = X[:, keep]
-                adata = adata[:, keep].copy()
-                # print(f"  filter: dropped {n_drop}/{n_drop+keep.sum()} genes "
-                #       f"(detected in <{min_spots_detected} spots)")
+            n_detected = (X > 0).sum(axis=0)
+            keep = n_detected >= min_spots_detected
+            if keep.sum() == 0:
+                print(
+                    f"  WARN: min_spots_detected={min_spots_detected} kept 0 genes "
+                    f"on {sample_id}; relaxing to keep all genes."
+                )
+            else:
+                n_drop = (~keep).sum()
+                if n_drop > 0:
+                    X = X[:, keep]
+                    adata = adata[:, keep].copy()
 
     X = X / (X.sum(axis=1, keepdims=True) + 1e-10) * 1e4
     X = np.log1p(X)
@@ -355,6 +372,7 @@ def load_hest_multi_sample(
     smoothing_k: int = 8,
     min_spots_detected: int = 0,
     hvg_method: str = "dispersion",
+    strict_msigdb: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load and concatenate multiple HEST-1k sections.
@@ -371,7 +389,7 @@ def load_hest_multi_sample(
         coords:      (total_spots, 2) float32 (per-section [0,1] normalized)
         section_ids: (total_spots,) int64 — same index for spots from same section
     """
-    pathway_dict = _load_pathways(sources=pathway_sources)
+    pathway_dict = _load_pathways(sources=pathway_sources, strict_msigdb=strict_msigdb)
     if verbose:
         print(f"Pathways loaded ({pathway_sources}): {len(pathway_dict)}")
 
@@ -414,10 +432,11 @@ def load_hest_multi_sample(
     )
 
     # Global top-N pathway selection by pooled variance. The PEaRL paper's
-    # reported pathway MSE (~0.0017 on Breast) implies raw-ssGSEA scaling
-    # (std ≈ 0.05). z-normalization (std=1) inflates MSE by ~400× — PCC is
-    # scale-invariant per-dim but not in the global flatten metric. Use 'raw'
-    # for apple-to-apple parity with the paper.
+    # reported pathway MSE (~0.0017) and MAE (~0.0314) on Breast imply
+    # targets in a [0, ~0.1] range — i.e. per-pathway min-max scaling, NOT
+    # raw ssGSEA output (whose values can reach the hundreds, as seen in
+    # our logs where val pathway MSE was ~12 000). Use 'paper' for
+    # apple-to-apple parity.
     col_std = pw_full.std(axis=0)
     keep = np.argsort(col_std)[-n_pathways:][::-1]
     pathways = pw_full[:, keep]
@@ -425,11 +444,21 @@ def load_hest_multi_sample(
         pathways = (
             (pathways - pathways.mean(0)) / (pathways.std(0) + 1e-6)
         ).astype(np.float32)
+    elif pathway_normalization == "paper":
+        # Per-pathway min-max → [0,1]. This is the only normalization that
+        # actually matches arXiv:2510.03455's reported pathway MSE/MAE
+        # magnitudes. Earlier "raw" mode kept the diff-of-mean-ranks ssGSEA
+        # output unchanged, which is on a scale ~100×–10000× too large and
+        # makes the supervised loss train pathway-only (gene PCC ~0).
+        pmin = pathways.min(axis=0, keepdims=True)
+        pmax = pathways.max(axis=0, keepdims=True)
+        pathways = ((pathways - pmin) / (pmax - pmin + 1e-6)).astype(np.float32)
     elif pathway_normalization == "raw":
         pathways = pathways.astype(np.float32)
     else:
         raise ValueError(
-            f"pathway_normalization must be 'raw' or 'zscore', got {pathway_normalization!r}"
+            f"pathway_normalization must be one of "
+            f"{{'paper', 'raw', 'zscore'}}, got {pathway_normalization!r}"
         )
 
     if verbose:
@@ -581,13 +610,29 @@ _REACTOME_GMT_URL = "https://reactome.org/download/current/ReactomePathways.gmt.
 # MSigDB Hallmark gene sets (50 well-curated cancer pathways). The PEaRL paper
 # uses Reactome + MSigDB; without Hallmark, ~50 high-signal cancer pathways are
 # missing from the pool that ssGSEA + variance ranking can pick from.
+#
+# The Broad's official MSigDB downloads require login, so we mirror via
+# GitHub. The URL list rots quickly (the two originals here both 404'd in
+# May 2026 — see logs/pearl_train_baseline-10678067.out). Treat this list
+# as best-effort and prefer a manually pre-staged file at
+# `${PEARL_PATHWAY_CACHE}/h.all.v2023.1.Hs.symbols.gmt`. Use
+# `scripts/fetch_msigdb_hallmark.py` to populate it.
 _MSIGDB_HALLMARK_URLS = (
-    # Primary: GitHub-hosted GMT (no auth required).
     "https://raw.githubusercontent.com/igordot/msigdb/main/data/h.all.v2023.1.Hs.symbols.gmt",
-    # Mirror.
     "https://raw.githubusercontent.com/RasmussenLab/msigdb-mirror/master/h.all.v7.5.1.symbols.gmt",
+    "https://raw.githubusercontent.com/GSEA-MSigDB/msigdb-data/main/release/2023.1.Hs/h.all.v2023.1.Hs.symbols.gmt",
+    "https://figshare.com/ndownloader/files/41077614",  # MSigDB Hallmark v2023.1.Hs mirror
 )
 _PATHWAY_CACHE_DIR = os.environ.get("PEARL_PATHWAY_CACHE", "./pathway_data")
+# Filenames we check at `_PATHWAY_CACHE_DIR` before hitting the network.
+# Lets the user manually drop a GMT from a working mirror (or from a Broad
+# account) and have the pipeline pick it up without code changes.
+_MSIGDB_HALLMARK_CACHED_NAMES = (
+    "h.all.v2023.1.Hs.symbols.gmt",
+    "h.all.v7.5.1.symbols.gmt",
+    "h.all.symbols.gmt",
+    "msigdb_hallmark.gmt",
+)
 
 
 def _load_pathways_from_reactome(
@@ -668,39 +713,75 @@ def _load_pathways_from_reactome(
     return pathways
 
 
+def _find_cached_hallmark_gmt(cache_dir: str) -> Optional[str]:
+    """Return the first existing path under `cache_dir` that looks like a
+    pre-staged MSigDB Hallmark GMT, else None.
+
+    Files in this list are checked in order; the first one that exists and
+    parses to >= 40 valid pathways wins.
+    """
+    for name in _MSIGDB_HALLMARK_CACHED_NAMES:
+        p = os.path.join(cache_dir, name)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 def _load_pathways_msigdb_hallmark(
     cache_dir: str = None,
     min_genes: int = 5,
     max_genes: int = 500,
+    strict: bool = False,
 ) -> Dict[str, List[str]]:
     """Load MSigDB Hallmark gene sets (50 cancer-relevant pathways).
 
-    Tries each URL in `_MSIGDB_HALLMARK_URLS` in order; on persistent failure
-    returns an empty dict and prints a warning, so callers can fall back to
-    Reactome-only. The Hallmark collection is small (~50 sets) but very
-    high-signal for oncology spatial transcriptomics — paper uses it.
+    Resolution order:
+      1. Pre-staged file at `${cache_dir}/<any of _MSIGDB_HALLMARK_CACHED_NAMES>`.
+         Drop a GMT here manually if the network mirrors are down.
+      2. Each URL in `_MSIGDB_HALLMARK_URLS` in order.
+      3. If all fail: return {} and print a clear warning; the caller decides
+         whether to abort (apple-to-apple) or proceed with Reactome only.
+
+    `strict=True` raises instead of returning {} — used for the apple-to-apple
+    path where Hallmark IS load-bearing for paper reproduction.
     """
     import urllib.request
 
     cache_dir = cache_dir or _PATHWAY_CACHE_DIR
     os.makedirs(cache_dir, exist_ok=True)
-    gmt_path = os.path.join(cache_dir, "msigdb_hallmark.gmt")
 
-    if not os.path.isfile(gmt_path):
-        last_err = None
+    # Step 1: pre-staged file?
+    gmt_path = _find_cached_hallmark_gmt(cache_dir)
+    if gmt_path is None:
+        # Step 2: try mirrors.
+        gmt_path = os.path.join(cache_dir, "msigdb_hallmark.gmt")
+        last_err: Optional[Exception] = None
+        downloaded = False
         for url in _MSIGDB_HALLMARK_URLS:
             try:
                 print(f"Downloading MSigDB Hallmark from {url} ...")
                 urllib.request.urlretrieve(url, gmt_path)
+                downloaded = True
                 break
             except Exception as e:
                 last_err = e
                 continue
-        else:
-            print(
-                f"WARNING: failed to download MSigDB Hallmark "
-                f"({type(last_err).__name__}: {last_err}); using Reactome only."
+        if not downloaded:
+            msg = (
+                "Failed to download MSigDB Hallmark from any known mirror "
+                f"({type(last_err).__name__ if last_err else 'no mirrors tried'}: "
+                f"{last_err}). Apple-to-apple requires Reactome + MSigDB "
+                f"Hallmark per the PEaRL paper Section 4.1.\n"
+                "Workaround: manually download the GMT and place it at one of:\n"
+                + "\n".join(
+                    f"  {os.path.join(cache_dir, n)}" for n in _MSIGDB_HALLMARK_CACHED_NAMES
+                )
+                + "\nor run `python scripts/fetch_msigdb_hallmark.py` "
+                "with HTTP access to the Broad Institute / GSEA-MSigDB."
             )
+            if strict:
+                raise RuntimeError(msg)
+            print(f"WARNING: {msg}\nFalling back to Reactome-only pathway pool.")
             return {}
 
     pathways: Dict[str, List[str]] = {}
@@ -713,12 +794,20 @@ def _load_pathways_msigdb_hallmark(
             genes = [g.strip() for g in parts[2:] if g.strip()]
             if min_genes <= len(genes) <= max_genes:
                 pathways[name] = genes
+
+    if strict and len(pathways) < 40:
+        raise RuntimeError(
+            f"MSigDB Hallmark file at {gmt_path} parsed to only "
+            f"{len(pathways)} pathways (<40). Likely corrupted or a "
+            "placeholder. Delete it and re-fetch."
+        )
     return pathways
 
 
 def _load_pathways(
     sources: str = "reactome",
     cache_dir: str = None,
+    strict_msigdb: bool = False,
 ) -> Dict[str, List[str]]:
     """Load pathway gene sets from the configured sources.
 
@@ -726,14 +815,32 @@ def _load_pathways(
     sources='reactome_msigdb'    — Reactome + MSigDB Hallmark (paper-faithful).
                                    MSigDB names are prefixed with 'HALLMARK_' so
                                    they don't collide with Reactome names.
+
+    `strict_msigdb=True` (set by the apple-to-apple path) makes the Hallmark
+    failure mode a hard error rather than a silent fallback — preventing the
+    "Reactome only" misreport seen in pearl_train_baseline-10678067.out.
     """
     pathways = _load_pathways_from_reactome(cache_dir=cache_dir)
+    n_reactome = len(pathways)
     if sources == "reactome_msigdb":
-        hall = _load_pathways_msigdb_hallmark(cache_dir=cache_dir)
+        hall = _load_pathways_msigdb_hallmark(cache_dir=cache_dir, strict=strict_msigdb)
         for name, genes in hall.items():
             key = name if name.upper().startswith("HALLMARK") else f"HALLMARK_{name}"
             pathways[key] = genes
-        print(f"  Reactome + MSigDB Hallmark combined: {len(pathways)} pathways")
+        n_hall = len(hall)
+        # Honest reporting: state both source counts so a degraded run is
+        # obvious in the log instead of being hidden behind a single
+        # "combined: N" line.
+        print(
+            f"  Pathway pool: Reactome={n_reactome}, Hallmark={n_hall}, "
+            f"combined unique={len(pathways)}"
+        )
+        if n_hall == 0:
+            print(
+                "  ** WARNING: MSigDB Hallmark not loaded. Apple-to-apple "
+                "claim is COMPROMISED. See _load_pathways_msigdb_hallmark "
+                "for manual file placement."
+            )
     return pathways
 
 

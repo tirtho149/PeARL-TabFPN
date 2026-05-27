@@ -26,7 +26,7 @@ import json
 import os
 import time
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -43,6 +43,11 @@ from .eval import compute_metrics
 from .encoders import ContrastiveLoss, PathwayEncoder, VisionEncoder
 from .baseline import PEaRL, SupervisedLoss
 from .tabpfn_head import PEaRLWithTabPFN, SupervisedLossTabPFN, TabPFNHead
+from .tabpfn3_head import (
+    PEaRLWithTabPFN3,
+    SupervisedLossTabPFN3,
+    TabPFN3Head,
+)
 
 
 # ----------------------------------------------------------------------------
@@ -70,11 +75,15 @@ class PEaRLCached(nn.Module):
         n_genes: int,
         embed_dim: int = 256,
         pathway_hidden: int = 512,
-        head_type: str = "mlp",  # "mlp" or "tabpfn"
+        head_type: str = "mlp",  # "mlp" | "tabpfn" | "tabpfn3"
         tabpfn_top_k_pathways: int = 20,
         tabpfn_top_k_genes: int = 50,
         tabpfn_mode: str = "refinement",  # "refinement" or "residual"
         tabpfn_n_estimators: int = 4,
+        # TabPFN-3 (WACV combination) — see docs/WACV_PIPELINE.md.
+        tabpfn3_n_estimators: int = 8,
+        tabpfn3_precision: str = "fp32",
+        tabpfn3_context_cap: int | None = None,
     ):
         super().__init__()
         self.feat_proj = nn.Linear(feat_dim, embed_dim)
@@ -93,6 +102,19 @@ class PEaRLCached(nn.Module):
             self.gene_head = TabPFNHead(
                 embed_dim, n_genes, use_tabpfn=True, tabpfn_top_k=tabpfn_top_k_genes,
                 mode=tabpfn_mode, n_estimators=tabpfn_n_estimators,
+            )
+        elif head_type == "tabpfn3":
+            self.pathway_head = TabPFN3Head(
+                embed_dim, n_pathways,
+                n_estimators=tabpfn3_n_estimators,
+                precision=tabpfn3_precision,
+                context_cap=tabpfn3_context_cap,
+            )
+            self.gene_head = TabPFN3Head(
+                embed_dim, n_genes,
+                n_estimators=tabpfn3_n_estimators,
+                precision=tabpfn3_precision,
+                context_cap=tabpfn3_context_cap,
             )
         else:
             self.pathway_head = nn.Sequential(
@@ -116,10 +138,13 @@ class PEaRLCached(nn.Module):
 
     def fit_tabpfn_heads(self, X_train, y_pathway_train, y_gene_train,
                          mlp_pathway_pred=None, mlp_gene_pred=None):
-        if self.head_type != "tabpfn":
-            return
-        self.pathway_head.fit(X_train, y_pathway_train, mlp_pred_on_X=mlp_pathway_pred)
-        self.gene_head.fit(X_train, y_gene_train, mlp_pred_on_X=mlp_gene_pred)
+        if self.head_type == "tabpfn":
+            self.pathway_head.fit(X_train, y_pathway_train, mlp_pred_on_X=mlp_pathway_pred)
+            self.gene_head.fit(X_train, y_gene_train, mlp_pred_on_X=mlp_gene_pred)
+        elif self.head_type == "tabpfn3":
+            # v3 is pure-only; no MLP-residual signal needed.
+            self.pathway_head.fit(X_train, y_pathway_train)
+            self.gene_head.fit(X_train, y_gene_train)
 
 
 # ----------------------------------------------------------------------------
@@ -209,7 +234,12 @@ def stage2_supervised(model, train_loader, val_loader, device, epochs, patience,
     The pathway encoder (used only for stage 1) is frozen here."""
     for p in model.pathway_encoder.parameters():
         p.requires_grad = False
-    loss_fn = SupervisedLossTabPFN() if head_type == "tabpfn" else SupervisedLoss()
+    if head_type == "tabpfn":
+        loss_fn = SupervisedLossTabPFN()
+    elif head_type == "tabpfn3":
+        loss_fn = SupervisedLossTabPFN3()
+    else:
+        loss_fn = SupervisedLoss()
     trainables = [p for p in model.parameters() if p.requires_grad]
     opt = optim.AdamW(trainables, lr=lr, weight_decay=wd)
     sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
@@ -263,8 +293,16 @@ def evaluate(model, val_loader, device, return_predictions: bool = False, drop_c
         for f, pw, g, c in val_loader:
             f = f.to(device)
             h = model.forward_vision(f)            # (B, embed_dim)
-            ppred = model.pathway_head(h) if not isinstance(model.pathway_head, TabPFNHead) else model.pathway_head.mlp(h)
-            gpred = model.gene_head(h) if not isinstance(model.gene_head, TabPFNHead) else model.gene_head.mlp(h)
+            ppred = (
+                model.pathway_head.mlp(h)
+                if isinstance(model.pathway_head, (TabPFNHead, TabPFN3Head))
+                else model.pathway_head(h)
+            )
+            gpred = (
+                model.gene_head.mlp(h)
+                if isinstance(model.gene_head, (TabPFNHead, TabPFN3Head))
+                else model.gene_head(h)
+            )
             embeds.append(h.cpu()); mlp_pp.append(ppred.cpu()); mlp_gp.append(gpred.cpu())
             pt.append(pw.numpy()); gt.append(g.numpy()); cc.append(c.numpy())
 
@@ -274,9 +312,17 @@ def evaluate(model, val_loader, device, return_predictions: bool = False, drop_c
     pt = np.concatenate(pt); gt = np.concatenate(gt); cc = np.concatenate(cc)
 
     # TabPFN refinement (no-op for MLP-only models).
-    if isinstance(model.pathway_head, TabPFNHead):
+    pathway_std = None
+    gene_std = None
+    if isinstance(model.pathway_head, TabPFN3Head) and model.pathway_head.is_fitted:
+        point_p, pathway_std = model.pathway_head.predict_with_uncertainty(embeds)
+        mlp_pp = torch.from_numpy(point_p)
+    elif isinstance(model.pathway_head, TabPFNHead):
         mlp_pp = model.pathway_head.apply_tabpfn(embeds, mlp_pp)
-    if isinstance(model.gene_head, TabPFNHead):
+    if isinstance(model.gene_head, TabPFN3Head) and model.gene_head.is_fitted:
+        point_g, gene_std = model.gene_head.predict_with_uncertainty(embeds)
+        mlp_gp = torch.from_numpy(point_g)
+    elif isinstance(model.gene_head, TabPFNHead):
         mlp_gp = model.gene_head.apply_tabpfn(embeds, mlp_gp)
 
     pp_np = mlp_pp.numpy(); gp_np = mlp_gp.numpy()
@@ -285,10 +331,15 @@ def evaluate(model, val_loader, device, return_predictions: bool = False, drop_c
         "gene":    compute_metrics(gp_np, gt, drop_constant_cols=drop_constant_cols),
     }
     if return_predictions:
-        return metrics, {
+        preds = {
             "pathway_pred": pp_np, "gene_pred": gp_np,
             "pathway_true": pt, "gene_true": gt, "coords": cc,
         }
+        if pathway_std is not None:
+            preds["pathway_std"] = pathway_std
+        if gene_std is not None:
+            preds["gene_std"] = gene_std
+        return metrics, preds
     return metrics
 
 
@@ -317,9 +368,66 @@ def fit_tabpfn(model, train_loader, device):
     model.fit_tabpfn_heads(X, yp, yg, mlp_pathway_pred=ppm, mlp_gene_pred=gpm)
 
 
+def fit_tabpfn3(model, train_loader, device):
+    """Collect train embeddings + targets and fit TabPFN-3 heads (pure mode).
+
+    Mirrors `fit_tabpfn` but skips the MLP-prediction collection — v3 is
+    pure-only so MLP residuals are not used to rank or blend.
+    """
+    model.eval()
+    Xs, yp, yg = [], [], []
+    with torch.no_grad():
+        for f, pw, g, _c in train_loader:
+            f = f.to(device)
+            h = model.forward_vision(f)
+            Xs.append(h.cpu().numpy())
+            yp.append(pw.numpy()); yg.append(g.numpy())
+    X = np.concatenate(Xs); yp = np.concatenate(yp); yg = np.concatenate(yg)
+    print(f"    fitting TabPFN-3 (pure): X {X.shape}")
+    model.fit_tabpfn_heads(X, yp, yg)
+
+
 # ----------------------------------------------------------------------------
 # Fold runner
 # ----------------------------------------------------------------------------
+
+
+def _select_head_types(head_mode: str) -> Tuple[str, ...]:
+    """Map the `--head-mode` flag to the tuple of head types to run per fold.
+
+    Notes:
+      - `tabpfn3` is the WACV third combination. It is never bundled into
+        `both` so a BIBM run cannot accidentally trigger a v3 run that
+        depends on a Phase-0 config it may not have.
+      - For symmetry with v2, allow `both3` to mean "MLP + TabPFN-3" — the
+        anchor pairing Phase 1 of the WACV protocol uses to compute paired
+        significance against the MLP baseline within a single sweep.
+    """
+    if head_mode == "mlp":
+        return ("mlp",)
+    if head_mode == "tabpfn":
+        return ("tabpfn",)
+    if head_mode == "tabpfn3":
+        return ("tabpfn3",)
+    if head_mode == "both3":
+        return ("mlp", "tabpfn3")
+    return ("mlp", "tabpfn")
+
+
+def _head_label(head_type: str) -> str:
+    return {
+        "mlp": "Baseline",
+        "tabpfn": "TabPFN-3 variant (BIBM)",
+        "tabpfn3": "TabPFN-3 variant (WACV)",
+    }.get(head_type, head_type)
+
+
+def _variant_key(head_type: str) -> str:
+    return {
+        "mlp": "baseline",
+        "tabpfn": "tabpfn",
+        "tabpfn3": "tabpfn3",
+    }.get(head_type, head_type)
 
 
 def run_one_fold(
@@ -341,17 +449,14 @@ def run_one_fold(
     val_loader = make_tensor_loader(features, pathways, genes, coords, val_idx, args.batch_size, False)
 
     # Head-mode selector — apple-to-apple paper-comparison runs both; iterating
-    # on one side can skip the other to save GPU hours.
-    head_types = (
-        ("mlp",) if args.head_mode == "mlp"
-        else ("tabpfn",) if args.head_mode == "tabpfn"
-        else ("mlp", "tabpfn")
-    )
+    # on one side can skip the other to save GPU hours. `tabpfn3` is the WACV
+    # third combination — explicit-only, never bundled with `both`.
+    head_types = _select_head_types(args.head_mode)
 
     out = {}
     fold_preds = {}  # collected across heads, dumped after both finish
     for head_type in head_types:
-        label = "Baseline" if head_type == "mlp" else "TabPFN variant"
+        label = _head_label(head_type)
         print(f"  {label}")
         m = PEaRLCached(
             feat_dim=feat_dim,
@@ -364,6 +469,9 @@ def run_one_fold(
             tabpfn_top_k_genes=args.tabpfn_top_k_genes,
             tabpfn_mode=args.tabpfn_mode,
             tabpfn_n_estimators=args.tabpfn_n_estimators,
+            tabpfn3_n_estimators=args.tabpfn3_n_estimators,
+            tabpfn3_precision=args.tabpfn3_precision,
+            tabpfn3_context_cap=args.tabpfn3_context_cap,
         ).to(device)
 
         stage1_contrastive(
@@ -377,11 +485,13 @@ def run_one_fold(
         )
         if head_type == "tabpfn":
             fit_tabpfn(m, train_loader, device)
+        elif head_type == "tabpfn3":
+            fit_tabpfn3(m, train_loader, device)
         metrics, preds = evaluate(
             m, val_loader, device, return_predictions=True,
             drop_constant_cols=not args.keep_constant_cols,
         )
-        variant = "baseline" if head_type == "mlp" else "tabpfn"
+        variant = _variant_key(head_type)
         out[variant] = metrics
         fold_preds[variant] = preds
         del m
@@ -463,7 +573,12 @@ def _stage2_full(model, train_loader, val_loader, device, epochs, patience, lr, 
         p.requires_grad = False
     for p in model.vision_encoder.parameters():
         p.requires_grad = False
-    loss_fn = SupervisedLossTabPFN() if head_type == "tabpfn" else SupervisedLoss()
+    if head_type == "tabpfn":
+        loss_fn = SupervisedLossTabPFN()
+    elif head_type == "tabpfn3":
+        loss_fn = SupervisedLossTabPFN3()
+    else:
+        loss_fn = SupervisedLoss()
     trainables = [p for p in model.parameters() if p.requires_grad]
     opt = optim.AdamW(trainables, lr=lr, weight_decay=wd)
     sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
@@ -511,14 +626,14 @@ def _evaluate_full(model, val_loader, device, return_predictions: bool = False, 
             patches = patches.to(device)
             h = model.forward_vision_encoder(patches)
             ppred = (
-                model.pathway_head(h)
-                if not isinstance(model.pathway_head, TabPFNHead)
-                else model.pathway_head.mlp(h)
+                model.pathway_head.mlp(h)
+                if isinstance(model.pathway_head, (TabPFNHead, TabPFN3Head))
+                else model.pathway_head(h)
             )
             gpred = (
-                model.gene_head(h)
-                if not isinstance(model.gene_head, TabPFNHead)
-                else model.gene_head.mlp(h)
+                model.gene_head.mlp(h)
+                if isinstance(model.gene_head, (TabPFNHead, TabPFN3Head))
+                else model.gene_head(h)
             )
             embeds.append(h.cpu()); mlp_pp.append(ppred.cpu()); mlp_gp.append(gpred.cpu())
             pt.append(pw.numpy()); gt.append(g.numpy()); cc.append(c.numpy())
@@ -526,9 +641,17 @@ def _evaluate_full(model, val_loader, device, return_predictions: bool = False, 
     mlp_pp = torch.cat(mlp_pp, dim=0)
     mlp_gp = torch.cat(mlp_gp, dim=0)
     pt = np.concatenate(pt); gt = np.concatenate(gt); cc = np.concatenate(cc)
-    if isinstance(model.pathway_head, TabPFNHead):
+    pathway_std = None
+    gene_std = None
+    if isinstance(model.pathway_head, TabPFN3Head) and model.pathway_head.is_fitted:
+        point_p, pathway_std = model.pathway_head.predict_with_uncertainty(embeds)
+        mlp_pp = torch.from_numpy(point_p)
+    elif isinstance(model.pathway_head, TabPFNHead):
         mlp_pp = model.pathway_head.apply_tabpfn(embeds, mlp_pp)
-    if isinstance(model.gene_head, TabPFNHead):
+    if isinstance(model.gene_head, TabPFN3Head) and model.gene_head.is_fitted:
+        point_g, gene_std = model.gene_head.predict_with_uncertainty(embeds)
+        mlp_gp = torch.from_numpy(point_g)
+    elif isinstance(model.gene_head, TabPFNHead):
         mlp_gp = model.gene_head.apply_tabpfn(embeds, mlp_gp)
     pp_np = mlp_pp.numpy(); gp_np = mlp_gp.numpy()
     metrics = {
@@ -536,10 +659,15 @@ def _evaluate_full(model, val_loader, device, return_predictions: bool = False, 
         "gene":    compute_metrics(gp_np, gt, drop_constant_cols=drop_constant_cols),
     }
     if return_predictions:
-        return metrics, {
+        preds = {
             "pathway_pred": pp_np, "gene_pred": gp_np,
             "pathway_true": pt, "gene_true": gt, "coords": cc,
         }
+        if pathway_std is not None:
+            preds["pathway_std"] = pathway_std
+        if gene_std is not None:
+            preds["gene_std"] = gene_std
+        return metrics, preds
     return metrics
 
 
@@ -557,6 +685,22 @@ def _fit_tabpfn_full(model, train_loader, device):
     X = np.concatenate(Xs); yp = np.concatenate(yp); yg = np.concatenate(yg)
     ppm = np.concatenate(ppm); gpm = np.concatenate(gpm)
     print(f"    fitting TabPFN: X {X.shape} (mode={model.pathway_head.mode})")
+    model.fit_tabpfn_heads(X, yp, yg)
+
+
+def _fit_tabpfn3_full(model, train_loader, device):
+    """Full-backbone analogue of `fit_tabpfn3` — collect embeddings via the
+    UNI forward (no cached features) and fit v3 in pure mode."""
+    model.eval()
+    Xs, yp, yg = [], [], []
+    with torch.no_grad():
+        for patches, pw, g, _c in train_loader:
+            patches = patches.to(device)
+            h = model.forward_vision_encoder(patches)
+            Xs.append(h.cpu().numpy())
+            yp.append(pw.numpy()); yg.append(g.numpy())
+    X = np.concatenate(Xs); yp = np.concatenate(yp); yg = np.concatenate(yg)
+    print(f"    fitting TabPFN-3 (pure, full-backbone): X {X.shape}")
     model.fit_tabpfn_heads(X, yp, yg)
 
 
@@ -586,16 +730,12 @@ def run_one_fold_full_backbone(
     train_loader = _make_patch_loader(patches_t, pathways, genes, coords, train_idx, args.batch_size, True)
     val_loader = _make_patch_loader(patches_t, pathways, genes, coords, val_idx, args.batch_size, False)
 
-    head_types = (
-        ("mlp",) if args.head_mode == "mlp"
-        else ("tabpfn",) if args.head_mode == "tabpfn"
-        else ("mlp", "tabpfn")
-    )
+    head_types = _select_head_types(args.head_mode)
 
     out = {}
     fold_preds = {}
     for head_type in head_types:
-        label = "Baseline" if head_type == "mlp" else "TabPFN variant"
+        label = _head_label(head_type)
         print(f"  {label}")
         if head_type == "tabpfn":
             m = PEaRLWithTabPFN(
@@ -622,6 +762,21 @@ def run_one_fold_full_backbone(
                 tabpfn_top_k=args.tabpfn_top_k_genes,
                 mode=args.tabpfn_mode, n_estimators=args.tabpfn_n_estimators,
             ).to(device)
+        elif head_type == "tabpfn3":
+            m = PEaRLWithTabPFN3(
+                n_pathways=pathways.shape[1],
+                n_genes=genes.shape[1],
+                embed_dim=cfg.EMBED_DIM,
+                pathway_hidden=cfg.PATHWAY_HIDDEN,
+                use_imagenet_pretrain=True,
+                n_estimators=args.tabpfn3_n_estimators,
+                precision=args.tabpfn3_precision,
+                context_cap=args.tabpfn3_context_cap,
+            ).to(device)
+            m.vision_encoder = VisionEncoder(
+                embed_dim=cfg.EMBED_DIM, pretrained=True, backbone=args.encoder,
+                freeze_backbone=False, unfreeze_last_n_blocks=4,
+            ).to(device)
         else:
             m = PEaRL(
                 n_pathways=pathways.shape[1],
@@ -646,11 +801,13 @@ def run_one_fold_full_backbone(
         )
         if head_type == "tabpfn":
             _fit_tabpfn_full(m, train_loader, device)
+        elif head_type == "tabpfn3":
+            _fit_tabpfn3_full(m, train_loader, device)
         metrics, preds = _evaluate_full(
             m, val_loader, device, return_predictions=True,
             drop_constant_cols=not args.keep_constant_cols,
         )
-        variant = "baseline" if head_type == "mlp" else "tabpfn"
+        variant = _variant_key(head_type)
         out[variant] = metrics
         fold_preds[variant] = preds
         del m
@@ -667,14 +824,83 @@ def run_one_fold_full_backbone(
 # ----------------------------------------------------------------------------
 
 
-def select_breast_section_ids(metadata_csv: str, n_sections: int, seed: int = 42) -> List[str]:
+_HEST_ORGAN_ALIASES: Dict[str, Tuple[str, ...]] = {
+    # cfg.HEST_IDS key → HEST-v1.1 `organ` column values that count as that
+    # cohort. Defensive aliases (e.g. Lymph node vs Lymph) so the filter
+    # works against either form of the metadata CSV.
+    "Breast": ("Breast",),
+    "Skin": ("Skin",),
+    "Lymph": ("Lymph", "Lymph node", "Lymph Node"),
+}
+
+
+def select_cohort_section_ids(
+    metadata_csv: str,
+    cohort: str,
+    n_sections: int,
+    seed: int = 42,
+    id_prefix: Optional[str] = None,
+) -> List[str]:
+    """Pick a deterministic subset of HEST-1k sections from one cohort.
+
+    Generalizes `select_breast_section_ids` to any of the three cohorts
+    declared in `cfg.HEST_IDS`. The cohort is matched against the HEST
+    metadata `organ` column via `_HEST_ORGAN_ALIASES`, so a Lymph filter
+    works whether the CSV uses "Lymph" or "Lymph node".
+
+    `id_prefix` (e.g. `"TENX"`) restricts to a HEST-1k id namespace. Why
+    this matters: HEST-1k bundles multiple ST platforms — TENX* = 10x
+    Visium (what arXiv:2510.03455 used), SPA* = legacy SPATIAL platform,
+    NCBI* = aberrant submissions. Mixing platforms drops paper PCC by
+    ≥ 0.3 because the gene panels and resolutions are wildly different.
+    The May 2026 baseline (logs/pearl_train_baseline-10678067.out) picked
+    33 SPA + 3 TENX sections and that alone is a likely co-culprit of
+    the gene PCC 0.0754 vs paper 0.5868 gap. Apple-to-apple sets this
+    to "TENX".
+    """
+    if cohort not in _HEST_ORGAN_ALIASES:
+        raise ValueError(
+            f"Unknown cohort {cohort!r}; expected one of "
+            f"{sorted(_HEST_ORGAN_ALIASES)}"
+        )
     df = pd.read_csv(metadata_csv)
-    breast = df[(df.species == "Homo sapiens") & (df.organ == "Breast")].copy()
-    breast = breast.sort_values("id").reset_index(drop=True)
-    n = min(n_sections, len(breast))
+    organ_values = _HEST_ORGAN_ALIASES[cohort]
+    mask = (df.species == "Homo sapiens") & (df.organ.isin(organ_values))
+    sub = df[mask].copy().sort_values("id").reset_index(drop=True)
+    if len(sub) == 0:
+        raise SystemExit(
+            f"No HEST sections matched cohort={cohort!r} "
+            f"(organ ∈ {organ_values}). Check {metadata_csv}."
+        )
+
+    if id_prefix:
+        before = len(sub)
+        sub_pref = sub[sub["id"].str.startswith(id_prefix)].reset_index(drop=True)
+        if len(sub_pref) >= n_sections:
+            print(
+                f"[select_cohort] id_prefix={id_prefix!r} kept "
+                f"{len(sub_pref)}/{before} sections (apple-to-apple Visium-only)"
+            )
+            sub = sub_pref
+        else:
+            print(
+                f"[select_cohort] WARNING: id_prefix={id_prefix!r} kept "
+                f"only {len(sub_pref)}/{before} sections (need {n_sections}); "
+                f"falling back to all platforms. This may diverge from the "
+                f"PEaRL paper's Visium-only protocol — see "
+                f"docs/REPRODUCIBILITY_FIXES.md §F."
+            )
+
+    n = min(n_sections, len(sub))
     rng = np.random.default_rng(seed)
-    pick = np.sort(rng.choice(len(breast), size=n, replace=False))
-    return breast.iloc[pick]["id"].tolist()
+    pick = np.sort(rng.choice(len(sub), size=n, replace=False))
+    return sub.iloc[pick]["id"].tolist()
+
+
+def select_breast_section_ids(metadata_csv: str, n_sections: int, seed: int = 42) -> List[str]:
+    """Back-compat alias used by older BIBM scripts. Equivalent to
+    `select_cohort_section_ids(metadata_csv, "Breast", n_sections, seed)`."""
+    return select_cohort_section_ids(metadata_csv, "Breast", n_sections, seed=seed)
 
 
 def verify_hest_data(data_dir: str, sample_ids: List[str]) -> None:
@@ -858,6 +1084,48 @@ def _configure_cudnn() -> None:
         ) from e
 
 
+def _verify_apple_to_apple_data_ready(args) -> None:
+    """Pre-flight refusing to start a 50-hour run if known blockers are present.
+
+    Mirrors the issues seen in `logs.zip`:
+      - TabPFN runs failed at the head-fit step because TABPFN_TOKEN was
+        not set (TabPFNLicenseError) — wasted ~10 hr of stage-1 training.
+      - The MSigDB Hallmark download 404'd and the pipeline silently fell
+        back to Reactome-only, so the "apple-to-apple" claim was false.
+    Fail FAST here rather than late.
+    """
+    if args.head_mode in ("tabpfn", "both", "tabpfn3", "both3"):
+        token = os.environ.get("TABPFN_TOKEN") or os.environ.get("TABPFN_API_KEY")
+        if not token:
+            raise SystemExit(
+                "\n[apple-to-apple] FATAL: --head-mode includes TabPFN but "
+                "TABPFN_TOKEN is not set.\n"
+                "  Without it, TabPFNRegressor.fit() raises TabPFNLicenseError "
+                "after stage-1+2 has already burned GPU hours\n"
+                "  (see logs/pearl_train_tabpfn-10678070.out lines 198-326).\n"
+                "  Fix:\n"
+                "    1. Open https://ux.priorlabs.ai, log in, accept license, "
+                "copy API key.\n"
+                "    2. Add to .env:  TABPFN_TOKEN=<your-key>\n"
+                "    3. Re-submit. The SLURM scripts already source .env.\n"
+            )
+
+    # Hallmark pre-staging check: cheap to do here, expensive later.
+    if args.pathway_sources == "reactome_msigdb":
+        from .data import _find_cached_hallmark_gmt, _PATHWAY_CACHE_DIR
+        cached = _find_cached_hallmark_gmt(_PATHWAY_CACHE_DIR)
+        if cached is None:
+            print(
+                "[apple-to-apple] note: no pre-staged MSigDB Hallmark GMT "
+                f"found under {_PATHWAY_CACHE_DIR}. The loader will try "
+                "network mirrors; if all fail under strict_msigdb=True the "
+                "run aborts before stage 1. To pre-stage:\n"
+                "    python scripts/fetch_msigdb_hallmark.py"
+            )
+        else:
+            print(f"[apple-to-apple] using cached MSigDB Hallmark at {cached}")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", default="./hest_data")
@@ -905,10 +1173,72 @@ def main():
     p.add_argument("--tabpfn-n-estimators", type=int, default=4,
                    help="TabPFN ensemble size. Higher → better quality, slower.")
     p.add_argument(
-        "--head-mode", choices=["both", "mlp", "tabpfn"], default="both",
+        "--head-mode",
+        choices=["both", "mlp", "tabpfn", "tabpfn3", "both3"],
+        default="both",
         help=(
-            "both = train MLP baseline AND TabPFN variant per fold (default). "
-            "mlp/tabpfn = only that one head. Useful when iterating on one side."
+            "BIBM: both = MLP + TabPFN (default); mlp/tabpfn for either side "
+            "alone. The `tabpfn` head uses TabPFN-3 (latest) via "
+            "`tabpfn_head.TabPFNHead`. WACV: tabpfn3 = TabPFN-3 with "
+            "predictive-uncertainty wiring; both3 = MLP + TabPFN-3 (the "
+            "anchor pairing for paired significance in Phase 1 of "
+            "docs/WACV_PIPELINE.md). tabpfn3 and both3 are independent of "
+            "the BIBM `both` setting — they never auto-activate together."
+        ),
+    )
+    # TabPFN-3 (WACV combination) — see docs/WACV_PIPELINE.md.
+    p.add_argument(
+        "--tabpfn3-n-estimators", type=int, default=8,
+        help=(
+            "TabPFN-3 ensemble size. Default 8 is the Phase-0d starting "
+            "point; the WACV protocol may pin this to 32 after the "
+            "estimator sweep. Phase 0d (scripts/wacv/phase0_validate.py) "
+            "writes the final value into wacv_results/phase0/config.json."
+        ),
+    )
+    p.add_argument(
+        "--tabpfn3-precision",
+        choices=["fp32", "bf16", "fp16"], default="fp32",
+        help=(
+            "TabPFN-3 numerical precision at fit/predict. fp32 is the safe "
+            "default. Phase 2 sweeps {fp32, bf16, fp16}; the precision "
+            "knob lives here so the same module fits any of them."
+        ),
+    )
+    p.add_argument(
+        "--tabpfn3-context-cap", type=int, default=None,
+        help=(
+            "Per-section spots cap at TabPFN-3 inference. None = use the "
+            "global `cfg.HEST_MAX_SPOTS` (Phase 0e decides the Lymph "
+            "policy: uncapped if it fits in 24 GB, else capped to match "
+            "Breast/Skin for apple-to-apple comparability)."
+        ),
+    )
+    p.add_argument(
+        "--save-posteriors", action="store_true",
+        help=(
+            "Dump per-spot per-dim predictive std into fold predictions "
+            "(pathway_std / gene_std arrays). Required for Phase 3 "
+            "(calibration). Only emits keys when the head is `tabpfn3`."
+        ),
+    )
+    p.add_argument(
+        "--cohort", choices=["Breast", "Skin", "Lymph"], default="Breast",
+        help=(
+            "HEST-1k cohort. Breast is the BIBM canonical run; Skin and "
+            "Lymph extend the WACV evaluation. The cohort selects the "
+            "section filter, the per-cohort pathway-P target from "
+            "cfg.DATASET_PATHWAYS, and downstream output sub-directories."
+        ),
+    )
+    p.add_argument(
+        "--id-prefix", default=None,
+        help=(
+            "HEST-1k section id prefix filter (e.g. 'TENX' for 10x Visium "
+            "only). Apple-to-apple sets this to 'TENX' because the paper's "
+            "Breast/Skin/Lymph cohorts are all Visium and mixing SPA/NCBI "
+            "platforms tanked the May 2026 baseline (see "
+            "docs/REPRODUCIBILITY_FIXES.md §F)."
         ),
     )
     # Apple-to-apple parity flags
@@ -992,10 +1322,17 @@ def main():
     _configure_cudnn()
 
     if args.apple_to_apple:
-        # Bundle: every setting that brings the run into parity with arXiv:2510.03455.
+        # Bundle: every setting that brings the run into parity with
+        # arXiv:2510.03455. Reviewed after the pearl_train_baseline-10678067
+        # run reported gene PCC 0.0754 / pathway MSE 12335 (vs paper 0.5868 /
+        # 0.0017). Root causes documented in docs/REPRODUCIBILITY_FIXES.md.
         args.smooth_genes = True
         args.pathway_sources = "reactome_msigdb"
-        args.pathway_normalization = "raw"
+        # Was "raw" → left ssGSEA scores at huge scale (val MSE ~12k), which
+        # drowned out the gene loss and held gene PCC to ~0.07. "paper" does
+        # per-pathway min-max [0,1], matching the paper's pathway MSE ~0.0017
+        # / MAE ~0.0314 magnitudes and balancing the stage-2 loss.
+        args.pathway_normalization = "paper"
         args.unfreeze_last_4_blocks = True
         args.normalization = "paper"
         # Section-stratified k-fold matches the HEST-Benchmark convention
@@ -1007,19 +1344,29 @@ def main():
         args.hvg_method = "scanpy"   # falls back to seurat-numpy if scanpy missing
         args.learnable_temperature = True
         args.keep_constant_cols = True
+        # Visium-only — fix for platform mixing root cause (logs/...10678067:
+        # 33 SPA + 3 TENX sections, dominated by legacy SPATIAL platform).
+        if args.id_prefix is None:
+            args.id_prefix = "TENX"
         print(
             "[apple-to-apple] paper-faithful preset enabled:\n"
             "    smooth_genes=True, smoothing_k=8\n"
-            "    pathway_sources=reactome_msigdb, pathway_normalization=raw\n"
+            "    pathway_sources=reactome_msigdb (MSigDB Hallmark STRICT)\n"
+            "    pathway_normalization=paper (per-pathway min-max [0,1])\n"
             "    unfreeze_last_4_blocks=True\n"
             "    normalization=paper (per-gene min-max [0,1])\n"
             "    split=section (GroupKFold by section, no leakage)\n"
             "    tabpfn_mode=pure (1:1 MLP replacement on all output dims)\n"
-            "    min_spots_detected=1000 (paper filter)\n"
+            "    min_spots_detected=1000 (paper filter — see KNOWN LIMITATION)\n"
             "    hvg_method=scanpy (seurat-flavor; numpy fallback if scanpy missing)\n"
             "    learnable_temperature=True\n"
-            "    keep_constant_cols=True (do not drop zero-variance target cols)"
+            "    keep_constant_cols=True (do not drop zero-variance target cols)\n"
+            "    id_prefix=TENX (Visium-only — matches paper platform)"
         )
+        # Apple-to-apple pre-flight: refuse to proceed if Hallmark would
+        # silently degrade to Reactome-only. Hard failure here saves ~50 GPU
+        # hours over discovering it from a final PCC number.
+        _verify_apple_to_apple_data_ready(args)
 
     if args.smoke_test:
         args.n_sections = 5
@@ -1040,8 +1387,24 @@ def main():
     print(f"Sections: {args.n_sections}, max_spots/section: {args.max_spots_per_section}")
     print(f"Folds: {args.folds}, n_pathways: {args.n_pathways}, batch_size: {args.batch_size}")
 
-    sample_ids = select_breast_section_ids(args.metadata_csv, args.n_sections, seed=args.seed)
-    print(f"Selected {len(sample_ids)} sections")
+    # Resolve cohort-specific pathway count from cfg.DATASET_PATHWAYS unless
+    # the user explicitly overrode --n-pathways. The legacy default (775) is
+    # the Breast value; for Skin (609) or Lymph (1100) we silently swap it
+    # in so the same CLI invocation works across cohorts.
+    if args.cohort != "Breast" and args.n_pathways == 775:
+        cohort_p = cfg.DATASET_PATHWAYS.get(args.cohort)
+        if cohort_p:
+            print(
+                f"[cohort={args.cohort}] resolving --n-pathways "
+                f"775 (Breast default) → {cohort_p} from cfg.DATASET_PATHWAYS"
+            )
+            args.n_pathways = cohort_p
+
+    sample_ids = select_cohort_section_ids(
+        args.metadata_csv, args.cohort, args.n_sections, seed=args.seed,
+        id_prefix=args.id_prefix,
+    )
+    print(f"Selected {len(sample_ids)} sections from cohort={args.cohort}")
 
     # Pre-flight HEST check — fail fast if data is missing, before the long run.
     verify_hest_data(args.data_dir, sample_ids)
@@ -1062,8 +1425,18 @@ def main():
         smoothing_k=args.smoothing_k,
         min_spots_detected=args.min_spots_detected,
         hvg_method=args.hvg_method,
+        strict_msigdb=args.apple_to_apple,
     )
     print(f"Data loaded in {time.time()-t0:.1f}s")
+    # Print pathway-target scale so a regression to the "raw" bug is visible
+    # in stdout long before stage 2 finishes.
+    _p_min = float(pathways.min()); _p_max = float(pathways.max())
+    _p_std = float(pathways.std())
+    print(
+        f"Pathway target stats: min={_p_min:.4f} max={_p_max:.4f} "
+        f"std={_p_std:.4f} (paper expects std~0.05; if std > 1 the "
+        f"pathway_normalization mode is wrong)"
+    )
 
     # Feature extraction is only correct when the backbone is fully frozen.
     # For --unfreeze-last-4-blocks (apple-to-apple), the cached features go

@@ -1,9 +1,22 @@
-"""PEaRL+TabPFN — the head-to-head condition of the BIBM 2026 paper.
+"""PEaRL+TabPFN — head-to-head condition for the WACV 2027 paper.
 
 Replaces PEaRL's MLP prediction heads with a bank of `TabPFNRegressor`
 instances (one per output dim in `mode="pure"`). Shares encoders and the
 contrastive loss with the MLP baseline (`baseline.py`), so the only
 variable between the two conditions is the head architecture.
+
+Model version: **TabPFN-v3**, explicitly selected via
+`TabPFNRegressor.create_default_for_version(ModelVersion.V3)`. This is
+the same model used by `tabpfn3_head.TabPFN3Head` (WACV uncertainty
+head); the two files differ in what they expose at inference (point
+estimates here, per-spot predictive std there), not in the underlying
+regressor.
+
+Requirements: v3 weights live in the gated HuggingFace repo
+`Prior-Labs/tabpfn_3`. Before running, accept the PriorLabs license on
+HF and set `TABPFN_TOKEN` in the environment. The pin
+`tabpfn>=8.0,<9` still applies — the same wheel ships every version
+and v8.0.x exposes v3 via `create_default_for_version(...)`.
 """
 import torch
 import torch.nn as nn
@@ -79,6 +92,7 @@ class TabPFNHead(nn.Module):
         if use_tabpfn:
             try:
                 from tabpfn import TabPFNRegressor  # noqa: F401
+                from tabpfn.constants import ModelVersion  # noqa: F401
             except ImportError:
                 print("TabPFN not available, MLP-only path will be used")
                 self.use_tabpfn = False
@@ -146,6 +160,7 @@ class TabPFNHead(nn.Module):
             return
         try:
             from tabpfn import TabPFNRegressor
+            from tabpfn.constants import ModelVersion
 
             X = np.asarray(X, dtype=np.float32)
             y = np.asarray(y, dtype=np.float32)
@@ -202,7 +217,17 @@ class TabPFNHead(nn.Module):
             inner = perm[n_holdout:]
             X_inner, X_hold = X[inner], X[holdout]
 
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    "TabPFNHead.fit() requires CUDA but torch.cuda.is_available() is False. "
+                    "Check CUDA driver, CUDA_VISIBLE_DEVICES, and that torch was installed "
+                    "with GPU support (not the CPU-only wheel)."
+                )
+            device = "cuda"
+            print(
+                f"  [TabPFN] loading regressors on GPU: "
+                f"cuda:{torch.cuda.current_device()} ({torch.cuda.get_device_name(0)})"
+            )
             self._regressors = []
             alpha = np.ones(k, dtype=np.float32)
             n_pos_alpha = 0
@@ -211,10 +236,12 @@ class TabPFNHead(nn.Module):
                 f"on {k} dims (out of {y.shape[1]}; {rank_label})"
             )
             for i, dim in enumerate(top_k_idx):
-                r = TabPFNRegressor(
+                r = TabPFNRegressor.create_default_for_version(
+                    ModelVersion.V3,
                     device=device,
                     n_estimators=self.n_estimators,
                     random_state=42 + i,
+                    ignore_pretraining_limits=True,
                 )
                 r.fit(X_inner, fit_y[inner, dim])
                 self._regressors.append(r)

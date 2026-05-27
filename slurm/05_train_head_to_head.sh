@@ -36,6 +36,12 @@ if [ -f .env ]; then
   set +a
 fi
 
+if [ -z "${TABPFN_TOKEN:-}" ] && [ -z "${TABPFN_API_KEY:-}" ]; then
+  echo "[head_to_head] FATAL: TABPFN_TOKEN/TABPFN_API_KEY not set after sourcing .env" >&2
+  echo "  Add 'TABPFN_TOKEN=<key>' to $PEARL_REPO/.env (see README.md)." >&2
+  exit 1
+fi
+
 echo "[head_to_head] node=$(hostname) gpu=$(nvidia-smi -L 2>/dev/null | head -n1 || echo 'no gpu')"
 nvidia-smi || true
 

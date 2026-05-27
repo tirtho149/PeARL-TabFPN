@@ -1,249 +1,345 @@
-# PEaRL with TabPFN: Gene Expression Prediction from Histology
+# PEaRL + TabPFN v3 — Apple-to-Apple Reproduction of arXiv:2510.03455
 
-**Submission to IEEE BIBM 2026** — head-to-head comparison of MLP vs TabPFN heads on top of the PEaRL framework (arXiv:2510.03455), under an apple-to-apple reproduction protocol on HEST-1k Breast.
+End-to-end reproduction of **PEaRL** (Pathway-Enhanced Representation Learning) with
+**TabPFN v3** as the prediction head. Target venue: **WACV 2027**. Anchors against
+the original PEaRL paper (arXiv:2510.03455) on three HEST-1k cohorts (Breast / Skin
+/ Lymph) plus TCGA-BRCA survival.
+
+The repo is in active refactor (see [`/Users/tirthoroy/.claude/plans/wacv-refactor.md`](../.claude/plans/wacv-refactor.md))
+collapsing two-track BIBM/WACV scaffolding into a single WACV-aligned pipeline. This
+README documents **what works today** plus the verification gates needed before any
+full run. Where a component is planned-but-not-built, it's marked **PLANNED**.
 
 ## Authors
 
 **Ushashi Bhattacharjee**¹, **Alloy Das**¹, **Saria Hannan**¹, **Tirtho Roy**¹, and **Soumik Sarkar**¹
+¹Iowa State University, Ames, IA. Thanks to Koushik Howlader for valuable feedback.
 
-¹Iowa State University, Ames, IA
+---
 
-**Special Thanks**: Koushik Howlader for valuable discussions and feedback.
+## What this repo reproduces
 
-## What this repo is
+Three quantitative claims from the PEaRL paper:
 
-A controlled head-to-head benchmark of **PEaRL+MLP** vs **PEaRL+TabPFN** on the HEST-1k Breast cancer cohort. The only thing that changes between the two conditions is the stage-2 prediction head; every other knob — UNI v1 backbone with last-4-blocks fine-tuned, 8-neighbor smoothing, Reactome+MSigDB Hallmark pathway pool, raw pathway-target scaling, 5-fold CV — is fixed at the values reported in arXiv:2510.03455. One CLI flag (`--apple-to-apple`) bundles every paper-faithful setting.
-
-Outputs feed the IEEE BIBM 2026 paper draft in `paper/BIBM2026_PEaRL_TabPFN.tex`.
-
-## Datasets
-
-The codebase recognizes three HEST-1k cohorts via `cfg.HEST_IDS` and `cfg.DATASET_PATHWAYS` in `src/pearl_tabpfn/config.py`. Each cohort uses a different anchor section, pathway pool, and pathway-count target taken from the PEaRL paper.
-
-| Cohort | HEST anchor | Pathway count | Env-var override |
-|---|---|---|---|
-| **Breast** (BIBM-2026 canonical) | `TENX99` | 775 (Reactome + MSigDB Hallmark) | `HEST_ID_BREAST` |
-| Skin | `TENX158` | 609 | `HEST_ID_SKIN` |
-| Lymph node | `TENX143` | 1100 | `HEST_ID_LYMPH` |
-
-**What is actually wired end-to-end:** only **Breast**. The current 5-fold CV runner (`src/pearl_tabpfn/reproduction.py`) filters HEST-v1.1 rows by `organ == "Breast"`, and the SLURM scripts in `slurm/` hard-code `--n-sections 36` against the Breast pool. Skin and Lymph are declared so `pearl_tabpfn.figures.figure5_pathway_counts` can label the per-cohort bar plot referenced in the paper draft, and so future cohort wiring can drop in without re-touching `config.py`. Until that wiring lands, treat the entries above as a roadmap, not an SBATCH target.
-
-**Per-section protocol (applies to the Breast run today; identical knobs will apply to Skin/Lymph once wired):**
-
-| Item | Value |
-|---|---|
-| Source | **HEST-1k** (`MahmoodLab/hest` on HuggingFace, gated) |
-| Sections used | 36 (deterministically picked from the 117 available Breast rows in `HEST_v1_1_0.csv`) |
-| Per-section input | `hest_data/st/{id}.h5ad` (expression) + `hest_data/patches/{id}.h5` (224×224 H&E patches) |
-| Spots per section (cap) | 400 default, `--max-spots-per-section` |
-| Genes | top-1000 HVGs by pooled variance, Scanpy `flavor="seurat"` |
-| Pathway scoring | ssGSEA per spot |
-| Total payload to download | **~45 GB** for the Breast cohort (incl. WSI patches) |
-| Foundation backbone | **UNI v1** (`MahmoodLab/UNI`, gated DINOv2 ViT-L/16 on 100k WSIs) |
-| Spatial coords | 2-D, included with every spot |
-
-The metadata CSV ships with the dataset; the actual `.h5ad` and `.h5` files are pulled by `slurm/01_download_data.sh`. The repo currently has 1 sample (`TENX99.h5ad`, 30 MB) checked in for sanity-test purposes only; the full 36-section payload arrives during Phase 01.
-
-## End-to-end on Nova (Iowa State HPC)
-
-The seven SBATCH scripts under `slurm/` automate every phase. Submit them in order; each is idempotent (re-running just refreshes its phase). All scripts read `PEARL_REPO` (default `$PWD`) and `PEARL_VENV` (default `$PEARL_REPO/venv`) so the same scripts work from any allocation.
-
-### 0. One-time login-node setup
-
-```bash
-git clone https://github.com/tirtho149/PeARL-TabFPN.git
-cd PeARL-TabFPN
-
-# HuggingFace token (gated dataset + gated UNI backbone — both required)
-echo "HF_TOKEN=hf_xxx..." >  .env
-echo "HUGGINGFACE_HUB_TOKEN=hf_xxx..." >> .env
-```
-
-Then in a browser, accept the gating terms at:
-- https://huggingface.co/datasets/MahmoodLab/hest
-- https://huggingface.co/MahmoodLab/UNI
-
-### 1. Submit the seven phases
-
-```bash
-# Phase 00 — venv + editable package install (CPU, ~5 min, 4 cpu / 16 GB)
-PEARL_REPO=$PWD sbatch slurm/00_install.sh
-
-# Phase 01 — download HEST-1k Breast cohort (CPU, ~30 min, ~45 GB pulled)
-PEARL_REPO=$PWD sbatch slurm/01_download_data.sh
-
-# Phase 02 — structural validation on stub data (CPU, ~1 min)
-PEARL_REPO=$PWD sbatch slurm/02_validate.sh
-
-# Phase 03 — PEaRL+MLP baseline, 5-fold CV (GPU, ~7 hr on A100/RTX 3090)
-PEARL_REPO=$PWD sbatch slurm/03_train_baseline.sh
-
-# Phase 04 — PEaRL+TabPFN, 5-fold CV (GPU, ~45 hr — the long one)
-PEARL_REPO=$PWD sbatch slurm/04_train_tabpfn.sh
-
-# Phase 06 — render head-to-head BIBM figures (GPU, ~2 min)
-PEARL_REPO=$PWD sbatch slurm/06_generate_figures.sh
-```
-
-`slurm/05_train_head_to_head.sh` is an alternative to 03+04 — runs both heads in a single ~50 hr bundled job. Use it when your allocation supports one long reservation; use 03+04 when you want the cheap baseline to finish first and free the GPU between phases.
-
-Every job emails `tirtho@iastate.edu` on BEGIN / END / FAIL (edit the `--mail-user` line in `slurm/*.sh` for a different recipient). Logs land in `logs/pearl_<job>-<jobid>.{out,err}`.
-
-### 2. Total wall-clock budget
-
-Recommended GPU: **24 GB NVIDIA A100 / RTX 3090 / TITAN RTX**. 16 GB cards work with `--batch-size 64`.
-
-| Phase | Wall time on 24 GB GPU | Bottleneck |
+| Paper element | Metric | What this repo does |
 |---|---|---|
-| 00 install | ~5 min | pip wheels |
-| 01 download | ~30 min | HF mirror network |
-| 02 validate | ~1 min | CPU stub training |
-| 03 baseline (MLP) | **~7 hr** | 5 folds × ~1 hr (last-4-blocks unfrozen UNI forward) |
-| 04 TabPFN-pure | **~45 hr** | 5 folds × ~9 hr (1,775 TabPFNRegressors per fold) |
-| 06 figures | ~2 min | matplotlib |
-| **Total (split 03+04)** | **~53 hr** | dominated by Phase 04 |
-| Total (bundled 05) | ~50 hr | one allocation, no phase boundary |
+| **Table 1** — Gene expression | PCC / MSE / MAE on Breast / Skin / Lymph | Reproduces via `reproduction.py` 5-fold CV (currently Breast-wired; Skin / Lymph PLANNED) |
+| **Table 2** — Pathway expression | PCC / MSE / MAE on Breast / Skin / Lymph | Same runner, same metrics function |
+| **Table 3** — Survival (C-index) | TCGA-BRCA, AB-MIL + Cox | PLANNED. Survival pipeline smoke tested end-to-end against real TCGA-BRCA (see `scripts/smoke_survival.py`); training code is in the WACV plan Phase 3. |
+| **Figures 3–10** — spatial maps + correlations + Leiden | qualitative | `figures.py` has bar/scatter helpers today; per-paper figure generators PLANNED in `paper_figures.py`. |
 
-If you start Phase 00 on a Monday morning and queue all jobs as a dependency chain, expect head-to-head figures to be ready by Thursday morning. On smaller GPUs (16 GB) add ~30% to Phases 03–05.
+PCC convention used here = matches the paper's reporting (no constant-column filter).
+See [`docs/PCC_CONVENTION.md`](#) for the full discussion of the under-specified PCC
+definition in the paper and how we handle it. (`compute_metrics` returns both the
+global flatten PCC and per-dim mean PCC.)
 
-### 3. Outputs
+---
 
-```
-reproduction_results/
-├── fold_results.json              # incremental — written after each fold
-├── reproduction_results.json      # final: per-fold metrics + 5-fold mean ± std + paper reference
-├── predictions/
-│   ├── fold_0.npz                 # coords, pathway/gene preds + truth (both heads)
-│   ├── fold_1.npz
-│   └── ...
-└── figures/                       # written by Phase 06
-    ├── fig_h2h_1_metric_bars.png
-    ├── fig_h2h_2_contrastive_curves.png
-    ├── ...
-    └── fig_h2h_7_pathway_corr.png
-```
+## Data sources (3 separate gates)
 
-The `summary` block in `reproduction_results.json` fills `\TBD` cells in `paper/BIBM2026_PEaRL_TabPFN.tex` Table 1.
+Every data source has (a) a setup step you do once, (b) a smoke test that gates the
+real run. **Run the smoke test before any compute job — it takes seconds and
+catches every common loader bug.**
 
-## Local install (laptop / workstation, optional)
+### 1. HEST-1k (spatial transcriptomics)
 
-For development, smoke tests, or running on a single workstation with a 24 GB GPU:
+| | |
+|---|---|
+| Source | `MahmoodLab/hest` on HuggingFace (**gated**) |
+| Size | ~3.9 GB (full snapshot) |
+| Cohorts used | Breast `TENX99`, Skin `TENX158`, Lymph `TENX143` (override via `HEST_ID_{BREAST,SKIN,LYMPH}`) |
+| Pathway counts | Breast 775, Skin 609, Lymph 1100 (from `cfg.DATASET_PATHWAYS`) |
+| Setup | Accept terms at https://huggingface.co/datasets/MahmoodLab/hest, then `huggingface-cli login` |
+| Download | `bash SETUP_DATA.sh` |
+| Verification | `python scripts/verify_data.py` — loads all 3 cohorts, asserts non-trivial biological variance, runs `compute_metrics` on a noisy-mean baseline against real ssGSEA. Exits 0 if all 3 cohorts pass, 2 if any cohort missing. |
+
+### 2. TabPFN v3 (prediction head)
+
+| | |
+|---|---|
+| Source | `tabpfn>=8.0,<9` (PyPI) — model weights gated at `Prior-Labs/tabpfn_3` on HuggingFace |
+| Size | ~500 MB model weights |
+| Setup | Accept license at https://huggingface.co/Prior-Labs/tabpfn_3 + set `TABPFN_TOKEN` (or `HF_TOKEN`) |
+| Install | `pip install -e .` (declared in `pyproject.toml`) — needs **torch ≥ 2.5** (Linux / Apple Silicon / GPU box; **not** Intel Mac, which caps at torch 2.2.2) |
+| Verification | `python scripts/smoke_tabpfn3.py` — two tiers: (A) source-level API check (works on any machine; verifies `ModelVersion.V3` enum + `create_default_for_version` + weight loader exist in upstream + PEaRL heads call V3); (B) runtime fit/predict on 200×10 synthetic data + PCC sanity check (needs torch ≥ 2.5). |
+
+### 3. TCGA-BRCA (survival — optional)
+
+| | |
+|---|---|
+| Source (WSIs) | GDC Data Portal (`portal.gdc.cancer.gov`) — **open access**, no DAC needed |
+| Size (WSIs) | **1.08 TB** for 1,133 diagnostic slides (mean ~975 MB/slide; smallest 24 MB) |
+| Source (clinical) | GDC `/cases` endpoint or cBioPortal mirror |
+| Size (clinical) | ~100 KB for 1,098 cases (152 events, 945 censored) |
+| Setup | Install `gdc-client` (https://github.com/NCI-GDC/gdc-client) — no auth needed for open data. Optional: `openslide-bin` + `openslide-python` for `.svs` reading. |
+| Download | `gdc-client download -m gdc_manifest_*.txt -d /path/to/big/disk` |
+| Verification | `python scripts/smoke_survival.py` — four-tier: (1) GDC API reachable + 1,133 slides confirmed, (2) clinical TSV pulled + OS-time/event arrays built, (3) C-index math validated against real outcomes (random→0.5, oracle→1.0, anti→0.0), (4) downloads smallest WSI (~24 MB) and verifies `openslide` opens it + serves 224×224 patches. |
+
+**You do not need TCGA-BRCA on disk to develop / smoke test.** Use `--no-wsi` to skip the 24 MB sample download in the survival smoke.
+
+---
+
+## Environment setup
+
+**One command does everything** — `SETUP_ENV.sh` detects your CUDA version,
+creates a Python 3.11 venv, installs the right torch wheel, the project package,
+the TCGA-BRCA survival extras, and runs the Mac-safe smoke gates.
 
 ```bash
-python -m venv venv && source venv/bin/activate
-pip install -e .
-bash SETUP_DATA.sh                  # ~45 GB HEST-1k pull
-python scripts/validate.py          # ~1 min, structural pass/fail
-python scripts/run_reproduction.py --apple-to-apple --n-sections 36 --folds 5
-python scripts/generate_figures.py --results-dir reproduction_results
+git clone <repo> && cd PeARL-TabFPN
+
+# GPU host (Linux + NVIDIA) — auto-detects CUDA
+bash SETUP_ENV.sh
+
+# Explicit CUDA version (override auto-detect)
+bash SETUP_ENV.sh --cuda 12.4
+
+# Mac dev / CPU-only / smoke-testing only
+bash SETUP_ENV.sh --cpu
+
+# Skip the TCGA-BRCA survival extras (openslide, lifelines)
+bash SETUP_ENV.sh --no-survival
 ```
 
-`pip install -e .` resolves every dependency from `pyproject.toml` (torch, torchvision, timm, scanpy, tabpfn, …). Tested on Python 3.11, PyTorch 2.5.1+cu121, timm 1.0.26, tabpfn 7.1.1.
-
-For a fast sniff test (5 sections, 2 folds, 5 epochs, ~10 minutes — **does NOT match paper**):
+`SETUP_ENV.sh --help` prints all flags. After it finishes:
 
 ```bash
-python scripts/run_reproduction.py --smoke-test
+source venv/bin/activate
 ```
 
-## Headline result
+### What gets installed
 
-**5-fold cross-validated, HEST-1k Breast cancer (36 sections), apple-to-apple protocol.** Numbers populated after the reproduction run completes; see `reproduction_results.json`.
+| Component | Version pin | Notes |
+|---|---|---|
+| Python | 3.10 – 3.12 (3.11 preferred) | 3.13+ lacks wheels for scanpy/tabpfn; Intel-Mac note below |
+| torch | `>=2.5` | **Required by tabpfn 8 — uses `torch.nn.attention.SDPBackend` (torch 2.3+)** |
+| torchvision | `>=0.16` | matched to torch |
+| tabpfn | `>=8.0,<9` | provides `ModelVersion.V3` |
+| scanpy + anndata + h5py | latest | HEST loader |
+| timm | `>=1.0` | UNI v1 backbone via `hf-hub:` |
+| numpy | `<2` | torch/tabpfn not on numpy 2 yet |
+| scipy | `<1.16` | 1.16+ has a `pearsonr` regression on Py 3.14 |
+| openslide-bin + openslide-python + tifffile | latest | TCGA-BRCA WSI reading (`[survival]` extra) |
+| lifelines | `>=0.27` | C-index (`[survival]` extra) |
 
-| Target | **PEaRL+MLP (ours)** | **PEaRL+TabPFN (ours)** | Paper PEaRL (reported) |
-|---|---|---|---|
-| **Gene PCC** ↑ | _TBD_ | _TBD_ | 0.5868 ± 0.0359 |
-| **Pathway PCC** ↑ | _TBD_ | _TBD_ | 0.5055 ± 0.0271 |
-| Gene MSE ↓ | _TBD_ | _TBD_ | 0.0732 ± 0.0033 |
-| Gene MAE ↓ | _TBD_ | _TBD_ | 0.1828 ± 0.0043 |
-| Pathway MSE ↓ | _TBD_ | _TBD_ | 0.0017 ± 0.0001 |
-| Pathway MAE ↓ | _TBD_ | _TBD_ | 0.0314 ± 0.0010 |
+### CUDA wheel matrix (what `SETUP_ENV.sh` picks)
 
-Replace `_TBD_` with the cells from `summary` in `reproduction_results.json` after the run.
+| Host CUDA (from `nvidia-smi`) | torch index URL |
+|---|---|
+| 11.x | `https://download.pytorch.org/whl/cu118` |
+| 12.0 – 12.3 | `https://download.pytorch.org/whl/cu121` |
+| 12.4 – 12.5 | `https://download.pytorch.org/whl/cu124` |
+| 12.6+ / 13.x | `https://download.pytorch.org/whl/cu126` |
+| none / `--cpu` / Intel Mac | `https://download.pytorch.org/whl/cpu` |
 
-## What `--apple-to-apple` bundles
+### Intel Mac limitation
+
+Intel Macs cannot run TabPFN v3. PyTorch dropped Intel-Mac wheels after
+torch 2.2.2, but tabpfn 8 needs torch ≥ 2.3 (uses `torch.nn.attention.SDPBackend`).
+Use `SETUP_ENV.sh --cpu` to install everything except a usable tabpfn, then
+do dev work using the Mac-safe smokes (`smoke_no_data.py`, `smoke_survival.py`,
+`smoke_tabpfn3.py --skip-runtime`) and run real fits on a Linux GPU box or
+Apple Silicon Mac.
+
+### Tokens / gating (required before any data step)
+
+Three credentials gate the full pipeline. Set each as an env var (or write to
+`.env` and `source` it) — the smoke scripts read both `HF_TOKEN` and `TABPFN_TOKEN`.
+
+```bash
+# 1. HuggingFace — gates HEST-1k dataset + UNI backbone
+export HF_TOKEN=hf_xxx
+# accept terms at: https://huggingface.co/datasets/MahmoodLab/hest
+# accept terms at: https://huggingface.co/MahmoodLab/UNI
+
+# 2. PriorLabs — gates TabPFN v3 model weights
+export TABPFN_TOKEN=...
+# accept terms at: https://huggingface.co/Prior-Labs/tabpfn_3
+```
+
+No credentials needed for TCGA-BRCA (open access from GDC).
+
+---
+
+## Smoke gates (run before any compute)
+
+Six scripts, ordered by what they verify. **Run them in order — each catches a
+class of failure cheaply.** Every script exits 0 on pass / non-zero on fail.
+
+| # | Script | Verifies | Needs | Wall time | Where it runs |
+|---|---|---|---|---|---|
+| 1 | `scripts/smoke_no_data.py` | PCC / MSE / MAE math, smoothing, ssGSEA — synthetic numpy | numpy + scipy + sklearn | <5 s | **any machine** |
+| 2 | `scripts/smoke_tabpfn3.py --skip-runtime` | TabPFN v3 API surface (`ModelVersion.V3` + `create_default_for_version` + v3 weight loader) at source level | tabpfn-upstream source | <5 s | **any machine** |
+| 3 | `scripts/smoke_survival.py --no-wsi` | GDC API reachable + TCGA clinical loadable + C-index math correct on real outcomes | network | ~30 s | **any machine** |
+| 4 | `scripts/smoke_survival.py` | Adds: real `.svs` opens via openslide + 224×224 patch read | network + 25 MB disk | ~1 min | any machine with openslide |
+| 5 | `scripts/smoke_tabpfn3.py` | Full Tier B: tabpfn imports + `create_default_for_version(V3, device=cpu)` runs + tiny fit/predict | torch ≥ 2.5 + tabpfn | ~2 min | Linux / M-series Mac |
+| 6 | **`scripts/smoke_gpu.py`** | **GPU gate**: CUDA available, GPU props, TabPFN v3 loads on `cuda`, fit/predict on GPU, PCC > random | torch+CUDA + tabpfn + accepted PriorLabs license | ~3 min | **GPU host only** |
+| 7 | `scripts/validate.py` | Apple-to-apple training loop end-to-end on stub torch tensors | torch + scanpy + tabpfn | ~1 min | any with torch |
+| 8 | `scripts/verify_data.py` | All 3 HEST cohorts load with real biology + real-data PCC > 0 | HEST on disk | ~3 min | any with HEST |
+
+**Mac-safe subset (gates 1-3 + 2):** run before pushing changes from a laptop —
+catches PCC math regressions, TabPFN v3 API drift, and survival pipeline breakage
+in <1 minute total without needing data or GPU.
+
+**GPU machine: run all 8 gates in order.** Gates 5 + 6 are the canonical
+pre-flight before any expensive training. `smoke_gpu.py` is the same check
+`tabpfn3_head.TabPFN3Head.fit()` enforces at runtime — catching CUDA failures
+here saves the 1–10 hours of Stage 1 + 2 that would precede the fit step.
+
+---
+
+## Full reproduction (GPU host)
+
+```bash
+# 0. Install — one command
+bash SETUP_ENV.sh
+source venv/bin/activate
+
+# 1. Tokens (see "Environment setup" above)
+export HF_TOKEN=hf_xxx
+export TABPFN_TOKEN=...
+
+# 2. Data
+bash SETUP_DATA.sh                           # ~3.9 GB HEST pull
+# Optional, for survival arm — large download:
+# gdc-client download -m gdc_manifest_brca.txt -d /path/to/big/disk
+
+# 3. Smoke gates — all must pass (see table above)
+python scripts/smoke_no_data.py
+python scripts/smoke_tabpfn3.py
+python scripts/smoke_gpu.py
+python scripts/smoke_survival.py
+python scripts/validate.py
+python scripts/verify_data.py
+
+# 4. Full 5-fold CV (Breast today; multi-cohort PLANNED)
+python scripts/run_reproduction.py --apple-to-apple --n-sections 36 --folds 5 \
+    --head-mode both --cohort Breast
+```
+
+Expected wall time on one 24 GB GPU:
+
+| Phase | Time | Bottleneck |
+|---|---|---|
+| Smoke gates | <5 min total | I/O |
+| Stage 1 contrastive pretraining | ~1 hr/fold | UNI forward |
+| Stage 2 head training (MLP) | ~10 min/fold | small head |
+| Stage 2 head training (TabPFN v3 pure) | ~9 hr/fold | 1,775 regressors |
+| **One cohort, 5 folds, both heads** | **~50 hr** | TabPFN |
+| All 3 cohorts | ~150 hr (5+ days) | linear in cohort count |
+
+For HPC submissions, see `slurm/wacv/` and `docs/WACV_PIPELINE.md`.
+
+---
+
+## Apple-to-apple bundle (`--apple-to-apple`)
 
 | Flag | Setting | Paper alignment |
 |---|---|---|
-| `--smooth-genes --smoothing-k 8` | 8-neighbor spatial smoothing on (CP10K + log1p) gene matrix | matches "8-neighbor smoothing to reduce spot-level noise" |
-| `--min-spots-detected 1000` | Drop genes detected in <1000 spots before HVG selection | matches "filtered out genes detected in fewer than 1,000 spots" |
-| `--hvg-method scanpy` | Scanpy `highly_variable_genes(flavor="seurat")` | matches "highly variable genes (HVGs) were then selected using Scanpy" |
-| `--pathway-sources reactome_msigdb` | Reactome + MSigDB Hallmark gene sets | matches "we integrated gene sets from Reactome and MSigDB" |
-| `--pathway-normalization raw` | Preserve raw ssGSEA score scale (~0.05 std) | matches paper's pathway MSE ~0.0017 |
-| `--unfreeze-last-4-blocks` | UNI's last 4 transformer blocks trainable in stage 1 | matches "fine-tune the last 4 layers of UNI" |
-| `--learnable-temperature` | NT-Xent τ is a learnable scalar (log-parameterized, clamped) | matches "τ > 0 is a learnable temperature" |
-| `--normalization paper` | log1p + per-gene min-max [0,1] for gene targets | matches paper's MSE 0.0732 / MAE 0.1828 scale |
-| `--split section` | `GroupKFold` by section — no within-section spot leakage | matches HEST-Benchmark patient-stratified convention |
-| `--keep-constant-cols` | Do not drop zero-variance target columns from PCC | matches paper (no filter mentioned in arXiv:2510.03455) |
-| `--tabpfn-mode pure` | One `TabPFNRegressor` per output dim across ALL 1,775 dims | this repo's contribution — 1:1 MLP replacement for the head-to-head |
+| `--smooth-genes --smoothing-k 8` | 8-neighbor spatial smoothing on (CP10K + log1p) | "8-neighbor smoothing to reduce spot-level noise" |
+| `--min-spots-detected 1000` | Drop genes detected in <1000 spots before HVG | "filtered out genes detected in fewer than 1,000 spots" |
+| `--hvg-method scanpy` | `highly_variable_genes(flavor="seurat")`, top 1,000 | "highly variable genes were selected using Scanpy" |
+| `--pathway-sources reactome_msigdb` | Reactome + MSigDB Hallmark gene sets | "we integrated gene sets from Reactome and MSigDB" |
+| `--pathway-normalization paper` | Per-pathway min-max to [0, 1] | matches paper's pathway MSE ~0.0017 scale |
+| `--unfreeze-last-4-blocks` | UNI's last 4 transformer blocks trainable in stage 1 | "fine-tune the last 4 layers of UNI" |
+| `--learnable-temperature` | NT-Xent τ is a learnable scalar | "τ > 0 is a learnable temperature" |
+| `--normalization paper` | log1p + per-gene min-max [0,1] | matches paper's gene MSE 0.0732 scale |
+| `--split section` | `GroupKFold` by section | matches HEST-Benchmark patient-stratified convention |
+| `--keep-constant-cols` | Do not drop zero-variance columns from PCC | matches paper (no filter mentioned in arXiv:2510.03455) |
+| `--tabpfn-mode pure` | One `TabPFNRegressor` per output dim across all 1,775 dims | 1:1 MLP replacement for fair head-to-head |
 
-Override individual flags after `--apple-to-apple` to deviate from one knob and keep the rest. Example: `--apple-to-apple --pathway-sources reactome` for a Reactome-only ablation.
+---
 
-### TabPFN modes
-
-| `--tabpfn-mode` | What it does | Use when |
-|---|---|---|
-| **`pure`** | Replace the MLP entirely. One `TabPFNRegressor` per output dim across all 1,775 dims. Slowest. | **Apple-to-apple head-to-head with the MLP baseline** (canonical BIBM 2026 setting). |
-| `refinement` | Fit MLP, then overwrite MLP's prediction on top-k highest-MLP-residual-variance dims with TabPFN's prediction. | Quick TabPFN sniff test on top of a trained MLP. |
-| `residual` | Fit MLP, fit TabPFN on (X, MLP-residual) on top-k dims, blend with α-shrinkage on a 10% holdout. | When you want a guaranteed "never worse than MLP on holdout" hybrid. |
-
-## Architecture
-
-Both stages live in the same model class. Stage 1 trains all parameters via NT-Xent contrastive loss between image and pathway embeddings. Stage 2 freezes both encoders and trains only the heads on MSE for genes + pathways.
+## Architecture (in one diagram)
 
 ```
-patches (B,3,224,224) ──► VisionEncoder (UNI) ──► proj_head ──► h_image (B,256)
-                                                                   │
-                                                                   ▼
-                                                            [head: MLP or TabPFN]
-                                                                   │
-                                                                   ▼
-                                                   gene_pred (B,1000)  pathway_pred (B,775)
+patches (B,3,224,224) ──► VisionEncoder (UNI v1) ──► proj ──► h_image (B,256)
+                                                                  │
+                                                                  ▼
+                                                    [head: MLP  OR  TabPFN v3 (pure)]
+                                                                  │
+                                                                  ▼
+                                                   gene_pred (B,G)  pathway_pred (B,P)
 
-pathway scores (B,775) + coords (B,2) ──► PathwayEncoder (Transformer) ──► h_path (B,256)
+pathway scores (B,P) + coords (B,2) ──► PathwayEncoder (Transformer) ──► h_path (B,256)
 
 Stage 1: NT-Xent(h_image, h_path) — symmetric contrastive
 Stage 2: MSE(pred, target) on genes + pathways, encoders frozen
+Post-Stage 2 (TabPFN only): fit one TabPFNRegressor per output dim
 ```
 
-Feature caching (in `reproduction.py`): when UNI is fully frozen, features are extracted once per fold and reused. With `--apple-to-apple` (last-4-blocks unfrozen) the cache is stale, so we fall back to the full-backbone path — ~4× slower but paper-faithful.
+Both heads share the encoder stack bit-for-bit through end of Stage 2. The only
+divergence is the post-Stage-2 head: MLP gets trained jointly in Stage 2; TabPFN
+v3 gets one in-context regressor per output dim fitted on the trained image
+embeddings.
+
+---
 
 ## File structure
 
-| Path | Purpose |
-|---|---|
-| `scripts/run_reproduction.py` | **Primary entry point** — 36-section pooling, 5-fold CV, both heads per fold |
-| `scripts/train_baseline.py` / `scripts/train_tabpfn.py` | Thin wrappers — `--head-mode {mlp,tabpfn}` splits of the same runner |
-| `scripts/validate.py` / `scripts/verify_data.py` | Structural + data-loading smoke tests |
-| `scripts/generate_figures.py` | Renders the BIBM PNGs from saved fold predictions |
-| `src/pearl_tabpfn/reproduction.py` | 5-fold CV engine; cached + full-backbone paths |
-| `src/pearl_tabpfn/baseline.py` | `PEaRL` (MLP head), `SupervisedLoss` |
-| `src/pearl_tabpfn/tabpfn_head.py` | `PEaRLWithTabPFN`, `TabPFNHead` (3 modes), `SupervisedLossTabPFN` |
-| `src/pearl_tabpfn/encoders.py` | `PathwayEncoder`, `VisionEncoder` (UNI / ViT-L/16), `ContrastiveLoss` |
-| `src/pearl_tabpfn/data.py` | HEST-1k loading, ssGSEA, `HESTDataset`, pooled-variance pathway alignment |
-| `src/pearl_tabpfn/eval.py` | `compute_metrics` (PCC / MSE / MAE + drop-constant-cols filter) |
-| `src/pearl_tabpfn/config.py` | Global `cfg` consumed everywhere |
-| `src/pearl_tabpfn/figures.py` | Head-to-head BIBM figure set |
-| `slurm/00_install.sh` … `06_generate_figures.sh` | Nova SBATCH scripts |
-| `docs/APPLE_TO_APPLE.md` | Detailed apple-to-apple protocol + troubleshooting |
-| `docs/REPRODUCIBILITY.md` | Nova end-to-end recipe (this README is a digest of it) |
-| `paper/BIBM2026_PEaRL_TabPFN.tex` | IEEE BIBM 2026 manuscript |
-| `CLAUDE.md` | Repo guidance for future collaborators / Claude Code sessions |
+| Path | Purpose | Status |
+|---|---|---|
+| `scripts/run_reproduction.py` | 5-fold CV runner, both heads | works (Breast only) |
+| `scripts/train_tabpfn3.py` | Injects `--head-mode tabpfn3` | works |
+| `scripts/validate.py` | Structural smoke on stub torch tensors | works |
+| `scripts/verify_data.py` | Real HEST loading smoke — all 3 cohorts | works |
+| `scripts/smoke_no_data.py` | PCC + smoothing + ssGSEA math smoke (numpy only) | works |
+| `scripts/smoke_survival.py` | TCGA-BRCA loading + C-index smoke | works |
+| `scripts/smoke_tabpfn3.py` | TabPFN v3 API + runtime smoke (Tier A everywhere; Tier B needs torch ≥ 2.5) | works |
+| `scripts/smoke_gpu.py` | GPU + TabPFN v3 on GPU smoke (canonical pre-train gate) | works |
+| `SETUP_ENV.sh` | One-command reproducible install (auto-detects CUDA) | works |
+| `SETUP_DATA.sh` | HEST-1k download | works |
+| `scripts/wacv/phase{0..5}_*.py` | WACV characterization phases | stubs |
+| `src/pearl_tabpfn/reproduction.py` | 5-fold CV engine | works |
+| `src/pearl_tabpfn/baseline.py` | `PEaRL` + MLP head | works |
+| `src/pearl_tabpfn/tabpfn_head.py` | TabPFN head (3 modes: refinement/residual/pure), now V3 | works (GPU only) |
+| `src/pearl_tabpfn/tabpfn3_head.py` | TabPFN v3 head with predictive uncertainty | works (GPU only) |
+| `src/pearl_tabpfn/encoders.py` | PathwayEncoder, VisionEncoder (UNI/ViT-L/16), ContrastiveLoss | works |
+| `src/pearl_tabpfn/data.py` | HEST loading, ssGSEA, smoothing, HESTDataset | works |
+| `src/pearl_tabpfn/eval.py` | `compute_metrics` (PCC / MSE / MAE, both conventions) | works |
+| `src/pearl_tabpfn/config.py` | Global `cfg` | works |
+| `src/pearl_tabpfn/figures.py` | Bar / scatter figure helpers | partial — paper figure generators PLANNED |
+| `src/pearl_tabpfn/wacv/` | calibration, pathway_maps, stats | works (stubs for some) |
+| `src/pearl_tabpfn/survival/` | TCGA loader + AB-MIL + Cox + C-index | **not yet built** (smoke verified the pipeline is reachable) |
+| `slurm/wacv/` | Nova SBATCH scripts | works |
+| `docs/WACV_PIPELINE.md` | Source of truth for the WACV characterization protocol | works |
+| `docs/REPRODUCIBILITY.md` / `docs/APPLE_TO_APPLE.md` | End-to-end recipe and apple-to-apple flag detail | being merged into this README |
+| `paper/wacv2027/outline.md` | WACV manuscript outline | works |
+| `CLAUDE.md` | Repo guidance for future collaborators / Claude Code | works |
+
+---
 
 ## System requirements
 
-- Python 3.10+ (tested 3.11)
-- NVIDIA GPU with ≥ 22 GB VRAM (24 GB strongly recommended; 16 GB works with `--batch-size 64`)
-- ~50 GB free disk (HEST-1k payload + cache + results)
-- HuggingFace account with accepted UNI + HEST-1k gated terms
+| | Smoke / dev (Mac) | Full reproduction |
+|---|---|---|
+| Python | 3.11 (3.14 too new for torch on Intel Mac) | 3.10+ |
+| Torch | 2.2 (Intel Mac max) or 2.5+ (other) | **2.5+ required for TabPFN v3** |
+| GPU | not needed | NVIDIA ≥ 22 GB VRAM (24 GB recommended) |
+| Disk | ~2 GB (venv + 25 MB TCGA smoke) | ~50 GB (HEST + cache + results) + 1 TB if downloading full TCGA-BRCA WSIs |
+| Auth | none for Mac smoke (except optional HF for HEST verify) | HF + TabPFN tokens required |
+
+**Intel Mac limitation**: TabPFN 8 / v3 cannot run locally because PyTorch dropped
+Intel-Mac wheels after 2.2.2, while TabPFN 8 needs torch ≥ 2.3 (uses
+`torch.nn.attention.SDPBackend`). Use Tier A of `smoke_tabpfn3.py` for source-level
+verification; do all real fits on a Linux GPU box or Apple Silicon Mac.
+
+---
 
 ## Citation
 
 ```bibtex
-@inproceedings{pearl_tabpfn2026,
-  title={PEaRL with Pretrained Tabular Models: Enhancing Gene Expression Prediction from Histology},
+@inproceedings{pearl_tabpfn3_wacv2027,
+  title={Apple-to-Apple Reproduction of PEaRL with TabPFN v3 for Gene and Pathway Expression Prediction from Histology},
   author={Bhattacharjee, Ushashi and Das, Alloy and Hannan, Saria and Roy, Tirtho and Sarkar, Soumik},
-  booktitle={IEEE International Conference on Bioinformatics and Biomedicine (BIBM)},
-  year={2026}
+  booktitle={Winter Conference on Applications of Computer Vision (WACV)},
+  year={2027}
+}
+
+@article{pearl2025,
+  title={PEaRL: Pathway-Enhanced Representation Learning for Gene and Pathway Expression Prediction from Histology},
+  author={Majumder, Sejuti and Kapse, Saarthak and Bhattacharya, Moinak and Xu, Xuan and Yurovsky, Alisa and Prasanna, Prateek},
+  journal={arXiv preprint arXiv:2510.03455},
+  year={2025}
 }
 ```

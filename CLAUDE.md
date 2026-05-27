@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository purpose
 
-Research codebase reproducing **PEaRL** (Pathway-Enhanced Representation Learning, arXiv:2510.03455) on the HEST-1k spatial transcriptomics dataset, plus a follow-up variant that replaces the MLP prediction head with **TabPFN** (a pretrained in-context tabular regressor). The two heads share the encoder stack bit-for-bit and are compared apple-to-apple. Results feed an IEEE BIBM 2026 paper draft in `paper/`.
+Research codebase reproducing **PEaRL** (Pathway-Enhanced Representation Learning, arXiv:2510.03455) on the HEST-1k spatial transcriptomics dataset, plus follow-up variants that replace the MLP prediction head with TabPFN. **Three combinations** share the encoder stack bit-for-bit:
+
+1. **PEaRL + MLP** — paper-faithful baseline (BIBM 2026).
+2. **PEaRL + TabPFN-3 (pure, point estimates)** — head-to-head with the MLP (BIBM 2026). Uses `tabpfn_head.TabPFNHead`, which calls `TabPFNRegressor.create_default_for_version(ModelVersion.V3, ...)` (tabpfn>=8.0,<9). Earlier drafts of this codebase called this "TabPFN-v2"; the pin/model was bumped to v3 so the head-to-head reflects the current TabPFN release.
+3. **PEaRL + TabPFN-3 (pure, with predictive uncertainty)** — characterization across all 3 HEST cohorts (WACV 2027 B-track). Same underlying model as (2), but `tabpfn3_head.TabPFN3Head` additionally exposes per-spot per-dim predictive std via `predict(..., output_type="full")` for the Phase-3 calibration suite. See `docs/WACV_PIPELINE.md`.
+
+Results feed two manuscripts: IEEE BIBM 2026 (paper/, combinations 1+2 on Breast) and WACV 2027 (paper/wacv2027/, combination 3 on Breast + Skin + Lymph). The BIBM pipeline and the WACV pipeline live in parallel namespaces (`reproduction_results/` vs `wacv_results/`, BIBM `--head-mode {mlp,tabpfn,both}` vs WACV `--head-mode {tabpfn3,both3}`).
 
 ## Layout
 
@@ -15,7 +21,9 @@ PeARL-TabFPN/
 │   ├── data.py                # HEST-1k loading, ssGSEA, HESTDataset
 │   ├── encoders.py            # PathwayEncoder, VisionEncoder, ContrastiveLoss, VitFeatureExtractor
 │   ├── baseline.py            # PEaRL + MLP head (paper-faithful)
-│   ├── tabpfn_head.py         # PEaRLWithTabPFN, TabPFNHead (3 modes)
+│   ├── tabpfn_head.py         # PEaRLWithTabPFN, TabPFNHead (3 modes)  — v2, BIBM
+│   ├── tabpfn3_head.py        # PEaRLWithTabPFN3, TabPFN3Head           — v3, WACV
+│   └── wacv/                  # calibration, pathway_maps, stats (WACV characterization helpers)
 │   ├── trainer.py             # Trainer (single-section, legacy — not used by current scripts)
 │   ├── eval.py                # compute_metrics, plots
 │   ├── figures.py             # BIBM head-to-head figures
@@ -24,12 +32,16 @@ PeARL-TabFPN/
 ├── scripts/                   # thin CLI wrappers
 │   ├── run_reproduction.py    # canonical entry — both heads, --apple-to-apple
 │   ├── train_baseline.py      # injects --head-mode mlp
-│   ├── train_tabpfn.py        # injects --head-mode tabpfn
+│   ├── train_tabpfn.py        # injects --head-mode tabpfn       — BIBM (v2)
+│   ├── train_tabpfn3.py       # injects --head-mode tabpfn3      — WACV (v3)
+│   ├── wacv/                  # WACV phase scripts (cache_embeddings, phase0..phase5)
 │   ├── validate.py            # structural smoke test on stub data
 │   ├── verify_data.py         # checks HEST loads + real PCC > 0
 │   └── generate_figures.py    # post-run figure renderer
-├── slurm/                     # Nova SBATCH scripts (00..06)
-├── docs/                      # APPLE_TO_APPLE.md, REPRODUCIBILITY.md
+├── slurm/                     # Nova SBATCH scripts
+│   ├── 00..06_*.sh            #   BIBM phases (untouched by WACV)
+│   └── wacv/00..06_*.sh       #   WACV phases (parallel pipeline)
+├── docs/                      # APPLE_TO_APPLE.md, REPRODUCIBILITY.md, WACV_PIPELINE.md
 ├── paper/                     # IEEE BIBM 2026 LaTeX source
 ├── reference/                 # PEaRL + HEST-1k PDFs
 ├── pyproject.toml             # package metadata + deps
@@ -90,11 +102,12 @@ There is no test suite, linter, or CI. `scripts/validate.py` is the canonical st
 
 | Script | Role | Notes |
 |---|---|---|
-| `scripts/run_reproduction.py` | Both heads in one job | Calls `pearl_tabpfn.reproduction.main()` |
+| `scripts/run_reproduction.py` | MLP + TabPFN-3 (point) in one job | Calls `pearl_tabpfn.reproduction.main()` |
 | `scripts/train_baseline.py` | MLP head only | Injects `--head-mode mlp` then calls `main()` |
-| `scripts/train_tabpfn.py` | TabPFN head only | Injects `--head-mode tabpfn` then calls `main()` |
+| `scripts/train_tabpfn.py` | TabPFN-3 head only, point estimates (BIBM) | Injects `--head-mode tabpfn` then calls `main()` |
+| `scripts/train_tabpfn3.py` | **TabPFN-3 head only, with predictive std (WACV)** | Injects `--head-mode tabpfn3` then calls `main()` |
 
-All three drive the same 5-fold cross-validation runner in `pearl_tabpfn.reproduction`. The split exists so SLURM can run the cheap baseline first and free the GPU before the long TabPFN job.
+All four drive the same 5-fold cross-validation runner in `pearl_tabpfn.reproduction`. The split exists so SLURM can run the cheap baseline first and free the GPU before the long TabPFN job. The `tabpfn3` selector is *additive*: it never bundles into BIBM's `both` mode, so a BIBM run cannot accidentally trigger a WACV (TabPFN-3) job.
 
 `pearl_tabpfn.trainer.Trainer` is still present but no current script uses it — it's a single-section two-stage trainer kept for reference.
 
