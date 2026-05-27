@@ -1,0 +1,201 @@
+% WACV 2027 — Apple-to-apple reproduction of PEaRL (arXiv:2510.03455) with
+% TabPFN v3 as the prediction head.
+%
+% \TBD{key} cells are filled by scripts/reproduce_paper.py from JSON outputs.
+% Key format:
+%   \TBD{table1_gene_<Cohort>_<METRIC>}     ← Table 1 (gene PCC/MSE/MAE)
+%   \TBD{table2_pathway_<Cohort>_<METRIC>}  ← Table 2 (pathway PCC/MSE/MAE)
+%   \TBD{table3_cindex}                     ← Table 3 (survival C-index)
+%
+% Run: python scripts/reproduce_paper.py --output-dir wacv_results/paper_run
+% Filled output: wacv_results/paper_run/paper.tex
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{cite}
+
+\title{Apple-to-Apple Reproduction of PEaRL with TabPFN v3 for Gene and Pathway Expression Prediction from Histology}
+
+\author{Ushashi Bhattacharjee \and Alloy Das \and Saria Hannan \and Tirtho Roy \and Soumik Sarkar\\
+Iowa State University\\
+\texttt{\{ushashi,alloy,saria,tirtho,soumiks\}@iastate.edu}}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We reproduce the PEaRL framework~\cite{majumder2025pearl} for gene and pathway
+expression prediction from histology under a strict apple-to-apple protocol on
+HEST-1k~\cite{jaume2024hest} and TCGA-BRCA, and replace its MLP prediction
+head with TabPFN v3~\cite{priorlabs2024tabpfn}. We characterize accuracy across
+three cancer cohorts (Breast, Skin, Lymph), reproduce the published spatial
+maps, Leiden clusterings, and survival analysis, and report a head-to-head
+comparison of the MLP and TabPFN v3 heads under identical pre-stage-2
+encoders. Code and one-command reproduction available at
+\url{https://github.com/tirtho149/PeARL-TabFPN}.
+\end{abstract}
+
+\section{Introduction}
+% (1 page) — frame: PEaRL's contribution + the gap (no in-context head explored),
+% TabPFN v3 as a natural plug-in for the MLP, why apple-to-apple matters.
+[TODO — write from paper/wacv2027/outline.md \S 1.]
+
+\section{Background}
+% (1 page) — minimum needed: pathway-augmented STR prediction, TabPFN v3 in-context
+% regression, why a 1-D-target in-context model fits a per-output-dim head bank.
+[TODO — see outline.md \S 2.]
+
+\section{Setup}
+% (\textonehalf{} page) — frozen task definition. Cohorts, gene targets, pathway
+% targets, splits, encoder, seed. The whole point: every comparison row in
+% Tables 1--3 uses the same task.
+We evaluate on three HEST-1k~\cite{jaume2024hest} cohorts:
+Breast (TENX99, 13{,}620 spots, 36 sections, 775 pathways), Skin (TENX158,
+8{,}671 spots, 12 sections, 609 pathways), and Lymph node (TENX143, 74{,}220
+spots, 24 sections, 1{,}100 pathways). All models train under
+\textit{section-stratified GroupKFold 5-fold CV} (matching HEST-Benchmark) with
+seed 42, the same data preprocessing pipeline (CP10K $\rightarrow$ log1p $\rightarrow$ 8-neighbor
+spatial smoothing $\rightarrow$ per-gene min-max), the same pathway pool (Reactome +
+MSigDB Hallmark), and the same UNI v1~\cite{chen2024uni} backbone with the
+last four transformer blocks fine-tuned in Stage~1.
+
+\section{Method}
+% (\textonehalf{} page) — describe the head swap. MLP $\rightarrow$ TabPFN-v3 (pure mode),
+% one regressor per output dim, fit on the trained image embeddings post-Stage-2.
+The only thing that differs across head conditions is the post-Stage-2
+prediction head. The MLP head is the paper's original two-layer ReLU stack.
+The TabPFN v3 head replaces the MLP entirely: one
+\texttt{TabPFNRegressor.create\_default\_for\_version(ModelVersion.V3)} per
+output dim, fit on the trained image embeddings.
+
+\section{Results}
+
+\subsection{Gene expression prediction (Table~\ref{tab:gene})}
+
+\begin{table}[t]
+\centering
+\caption{Gene expression prediction (PCC / MSE / MAE; 5-fold mean $\pm$ std). Bold = our run; paper rows reported from arXiv:2510.03455.}
+\label{tab:gene}
+\begin{tabular}{lccc}
+\toprule
+Method & Breast & Skin & Lymph \\
+\midrule
+PEaRL (paper) & $0.5868 \pm 0.0359$ & $0.3756 \pm 0.0148$ & $0.2352 \pm 0.0145$ \\
+\textbf{PEaRL+MLP (ours)} & \textbf{\TBD{table1_gene_Breast_PCC}} & \textbf{\TBD{table1_gene_Skin_PCC}} & \textbf{\TBD{table1_gene_Lymph_PCC}} \\
+\textbf{PEaRL+TabPFN-v3 (ours)} & \textbf{\TBD{table1_gene_Breast_PCC}} & \textbf{\TBD{table1_gene_Skin_PCC}} & \textbf{\TBD{table1_gene_Lymph_PCC}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Pathway expression prediction (Table~\ref{tab:path})}
+
+\begin{table}[t]
+\centering
+\caption{Pathway expression prediction (PCC / MSE / MAE; 5-fold mean $\pm$ std).}
+\label{tab:path}
+\begin{tabular}{lccc}
+\toprule
+Method & Breast & Skin & Lymph \\
+\midrule
+PEaRL (paper) & $0.5055 \pm 0.0271$ & $0.3523 \pm 0.0336$ & $0.2247 \pm 0.0353$ \\
+\textbf{PEaRL+MLP (ours)} & \textbf{\TBD{table2_pathway_Breast_PCC}} & \textbf{\TBD{table2_pathway_Skin_PCC}} & \textbf{\TBD{table2_pathway_Lymph_PCC}} \\
+\textbf{PEaRL+TabPFN-v3 (ours)} & \textbf{\TBD{table2_pathway_Breast_PCC}} & \textbf{\TBD{table2_pathway_Skin_PCC}} & \textbf{\TBD{table2_pathway_Lymph_PCC}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Survival analysis (Table~\ref{tab:surv})}
+% Survival arm — TCGA-BRCA WSI + AB-MIL + Cox partial-likelihood, 5-fold CV.
+\begin{table}[t]
+\centering
+\caption{TCGA-BRCA survival (C-index, 5-fold mean $\pm$ std).}
+\label{tab:surv}
+\begin{tabular}{lc}
+\toprule
+Method & C-index \\
+\midrule
+PEaRL (paper) & $0.659 \pm 0.027$ \\
+\textbf{PEaRL+TabPFN-v3 (ours)} & \textbf{\TBD{table3_cindex}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Qualitative results}
+Spatial heatmaps across the three cohorts for the paper-chosen pathway and gene
+per cohort (Figure~\ref{fig:fig3}). Pathway-pathway and gene-gene correlation
+matrices (Figures~\ref{fig:fig5},~\ref{fig:fig6}). Leiden clusterings with ARI
+labels (Figures~\ref{fig:fig4},~\ref{fig:fig7},~\ref{fig:fig8}).
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{paper_figures/fig3_spatial_predictions.png}
+\caption{Spatial predictions of one pathway (top) and one gene (bottom) per cohort.
+Breast: Hallmark\_allograft\_rejection / HLA-DMB.
+Skin:   Hallmark\_epithelial\_mesenchymal\_transition / QSOX1.
+Lymph:  Reactome\_ABC\_family\_proteins\_mediated\_transport / DERL3.}
+\label{fig:fig3}
+\end{figure*}
+
+\begin{figure}[t] \centering \includegraphics[width=0.95\linewidth]{paper_figures/fig4_leiden_skin.png}
+\caption{Leiden clustering on Skin.} \label{fig:fig4} \end{figure}
+
+\begin{figure*}[t] \centering \includegraphics[width=0.9\textwidth]{paper_figures/fig5_pathway_correlation.png}
+\caption{Pathway--pathway correlation matrices across the three cohorts.} \label{fig:fig5} \end{figure*}
+
+\begin{figure*}[t] \centering \includegraphics[width=0.9\textwidth]{paper_figures/fig6_gene_correlation.png}
+\caption{Gene--gene correlation matrices.} \label{fig:fig6} \end{figure*}
+
+\begin{figure}[t] \centering \includegraphics[width=0.95\linewidth]{paper_figures/fig7_leiden_breast.png}
+\caption{Leiden clustering on Breast.} \label{fig:fig7} \end{figure}
+
+\begin{figure}[t] \centering \includegraphics[width=0.95\linewidth]{paper_figures/fig8_leiden_lymph.png}
+\caption{Leiden clustering on Lymph.} \label{fig:fig8} \end{figure}
+
+\section{Discussion}
+% (\textonehalf{} page) — what changes when we swap MLP $\rightarrow$ TabPFN v3:
+% per-cohort delta in PCC, robustness on small cohorts (Skin), failure modes.
+
+\section{Conclusion}
+% (\textonefourth{} page) — apple-to-apple holds; TabPFN v3 is a drop-in;
+% release the one-command pipeline as a reproducible artifact.
+
+\bibliographystyle{plain}
+% Bib will be inlined in the final pass — see paper/wacv2027/refs.bib (TODO).
+\begin{thebibliography}{9}
+
+\bibitem{majumder2025pearl}
+S.~Majumder, S.~Kapse, M.~Bhattacharya, X.~Xu, A.~Yurovsky, and P.~Prasanna.
+\newblock {PEaRL}: Pathway-enhanced representation learning for gene and pathway expression prediction from histology.
+\newblock {\em arXiv preprint arXiv:2510.03455}, 2025.
+
+\bibitem{jaume2024hest}
+G.~Jaume, P.~Doucet, A.~Song, M.~Y.~Lu, C.~A.~Pérez, et al.
+\newblock {HEST-1k}: A dataset for spatial transcriptomics and histology image analysis.
+\newblock {\em Advances in Neural Information Processing Systems}, 37:53798--53833, 2025.
+
+\bibitem{chen2024uni}
+R.~J.~Chen, T.~Ding, M.~Y.~Lu, et al.
+\newblock A general-purpose self-supervised model for computational pathology.
+\newblock {\em Nature Medicine}, 30(3):863--874, 2024.
+
+\bibitem{priorlabs2024tabpfn}
+N.~Hollmann, S.~Müller, K.~Eggensperger, F.~Hutter.
+\newblock {TabPFN}: A transformer that solves small tabular classification problems in a second.
+\newblock {\em Nature}, 2024.
+
+\bibitem{ilse2018abmil}
+M.~Ilse, J.~Tomczak, M.~Welling.
+\newblock Attention-based deep multiple instance learning.
+\newblock {\em International Conference on Machine Learning}, 2018.
+
+\end{thebibliography}
+
+\end{document}

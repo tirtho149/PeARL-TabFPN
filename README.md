@@ -23,10 +23,10 @@ Three quantitative claims from the PEaRL paper:
 
 | Paper element | Metric | What this repo does |
 |---|---|---|
-| **Table 1** — Gene expression | PCC / MSE / MAE on Breast / Skin / Lymph | Reproduces via `reproduction.py` 5-fold CV (currently Breast-wired; Skin / Lymph PLANNED) |
+| **Table 1** — Gene expression | PCC / MSE / MAE on Breast / Skin / Lymph | Reproduces via `reproduction.py` 5-fold CV across all 3 cohorts; aggregated by `paper_figures.format_tables_1_2()` |
 | **Table 2** — Pathway expression | PCC / MSE / MAE on Breast / Skin / Lymph | Same runner, same metrics function |
-| **Table 3** — Survival (C-index) | TCGA-BRCA, AB-MIL + Cox | PLANNED. Survival pipeline smoke tested end-to-end against real TCGA-BRCA (see `scripts/smoke_survival.py`); training code is in the WACV plan Phase 3. |
-| **Figures 3–10** — spatial maps + correlations + Leiden | qualitative | `figures.py` has bar/scatter helpers today; per-paper figure generators PLANNED in `paper_figures.py`. |
+| **Table 3** — Survival (C-index) | TCGA-BRCA, AB-MIL + Cox | Built: `src/pearl_tabpfn/survival/` + `scripts/train_survival.py` + `slurm/wacv/07_survival.sh`. Needs TCGA-BRCA WSIs on disk (~1.08 TB). |
+| **Figures 3–10** — spatial maps + correlations + Leiden | qualitative | Built: `src/pearl_tabpfn/paper_figures.py` (Fig 3 spatial, Fig 4/7/8 Leiden, Fig 5/6 correlation, Fig 9/10 biology). |
 
 PCC convention used here = matches the paper's reporting (no constant-column filter).
 See [`docs/PCC_CONVENTION.md`](#) for the full discussion of the under-specified PCC
@@ -188,33 +188,80 @@ here saves the 1–10 hours of Stage 1 + 2 that would precede the fit step.
 
 ---
 
-## Full reproduction (GPU host)
+## Full reproduction (GPU host) — one command
+
+The full pipeline (3 cohorts × 2 heads + survival + figures + paper.tex)
+runs from a single Python or SBATCH command.
 
 ```bash
-# 0. Install — one command
+# 0. Install
 bash SETUP_ENV.sh
 source venv/bin/activate
 
-# 1. Tokens (see "Environment setup" above)
+# 1. Tokens (see "Environment setup")
 export HF_TOKEN=hf_xxx
 export TABPFN_TOKEN=...
 
 # 2. Data
 bash SETUP_DATA.sh                           # ~3.9 GB HEST pull
-# Optional, for survival arm — large download:
-# gdc-client download -m gdc_manifest_brca.txt -d /path/to/big/disk
+# Optional for survival — large download:
+gdc-client download -m gdc_manifest_brca.txt -d $WSI_DIR
 
-# 3. Smoke gates — all must pass (see table above)
-python scripts/smoke_no_data.py
-python scripts/smoke_tabpfn3.py
-python scripts/smoke_gpu.py
-python scripts/smoke_survival.py
-python scripts/validate.py
-python scripts/verify_data.py
+# 3. The one-command WACV paper run
+python scripts/reproduce_paper.py \
+    --apple-to-apple \
+    --cohorts Breast,Skin,Lymph \
+    --head-modes mlp,tabpfn3 \
+    --include-survival \
+    --wsi-dir $WSI_DIR \
+    --output-dir wacv_results/paper_run
+```
 
-# 4. Full 5-fold CV (Breast today; multi-cohort PLANNED)
-python scripts/run_reproduction.py --apple-to-apple --n-sections 36 --folds 5 \
-    --head-mode both --cohort Breast
+That single command runs all six stages: pre-flight smokes → per-cohort
+5-fold CV → survival training → metric aggregation → Figures 3–10 + Tables
+1–3 → renders `paper/wacv2027/paper.tex` with the numbers filled in.
+
+Iteration knobs (skip a stage you've already done):
+
+```bash
+--skip-smokes        # gates already passed
+--skip-training      # reuse existing predictions/
+--skip-survival      # no TCGA-BRCA on this host
+--skip-figures       # only update tables/metrics
+--dry-run            # print the plan, don't execute
+```
+
+### Same thing as a SLURM dependency chain (Nova)
+
+```bash
+PEARL_REPO=$PWD bash slurm/wacv/full_paper.sh
+# or:
+PEARL_REPO=$PWD bash slurm/wacv/full_paper.sh --no-survival
+PEARL_REPO=$PWD bash slurm/wacv/full_paper.sh --dry-run    # print chain only
+```
+
+This submits 11 SBATCH jobs as a `--dependency=afterok` chain:
+`install → smoke_gates → cache_embeddings → phase0..5 → survival → final`.
+Each phase gets its own resource allocation; if any stage fails, dependent
+stages auto-cancel. Final stage runs `reproduce_paper.py --skip-training`
+to do aggregation + figures + paper.tex.
+
+Wall-clock budget on one 24 GB GPU: **~1 week** (3 cohorts × 50 hr/cohort +
+~48 hr survival + aggregation/figures). Parallelize across GPUs to shrink.
+
+### Manual smoke gates (if not using the orchestrator)
+
+```bash
+python scripts/smoke_no_data.py     # PCC math
+python scripts/smoke_tabpfn3.py     # TabPFN v3 API + runtime
+python scripts/smoke_gpu.py         # GPU + v3 on cuda
+python scripts/smoke_survival.py    # TCGA-BRCA gate
+python scripts/validate.py          # apple-to-apple loop on stubs
+python scripts/verify_data.py       # real HEST loading
+
+# Then single-cohort training:
+python scripts/run_reproduction.py --apple-to-apple --cohort Breast \
+    --head-mode both --folds 5 --n-sections 36
 ```
 
 Expected wall time on one 24 GB GPU:
@@ -287,6 +334,14 @@ embeddings.
 | `scripts/smoke_survival.py` | TCGA-BRCA loading + C-index smoke | works |
 | `scripts/smoke_tabpfn3.py` | TabPFN v3 API + runtime smoke (Tier A everywhere; Tier B needs torch ≥ 2.5) | works |
 | `scripts/smoke_gpu.py` | GPU + TabPFN v3 on GPU smoke (canonical pre-train gate) | works |
+| `scripts/reproduce_paper.py` | **One-command WACV paper orchestrator** | works |
+| `scripts/train_survival.py` | TCGA-BRCA AB-MIL + Cox 5-fold survival training | works (needs WSIs) |
+| `src/pearl_tabpfn/paper_figures.py` | Generators for paper Figures 3–10 + Tables 1–3 | works |
+| `src/pearl_tabpfn/survival/` | TCGA-BRCA data + ABMIL + Cox loss + C-index | works (needs WSIs) |
+| `paper/wacv2027/paper.tex` | WACV LaTeX skeleton with `\TBD` cells the orchestrator fills | skeleton |
+| `slurm/wacv/full_paper.sh` | **SBATCH dependency chain — one-command Nova run** | works |
+| `slurm/wacv/07_survival.sh` | Survival arm SLURM | works |
+| `slurm/wacv/08_reproduce_paper_final.sh` | Aggregation + figures + paper.tex SLURM | works |
 | `SETUP_ENV.sh` | One-command reproducible install (auto-detects CUDA) | works |
 | `SETUP_DATA.sh` | HEST-1k download | works |
 | `scripts/wacv/phase{0..5}_*.py` | WACV characterization phases | stubs |
@@ -298,9 +353,10 @@ embeddings.
 | `src/pearl_tabpfn/data.py` | HEST loading, ssGSEA, smoothing, HESTDataset | works |
 | `src/pearl_tabpfn/eval.py` | `compute_metrics` (PCC / MSE / MAE, both conventions) | works |
 | `src/pearl_tabpfn/config.py` | Global `cfg` | works |
-| `src/pearl_tabpfn/figures.py` | Bar / scatter figure helpers | partial — paper figure generators PLANNED |
+| `src/pearl_tabpfn/figures.py` | Legacy bar / scatter helpers (kept for compat) | partial |
+| `src/pearl_tabpfn/paper_figures.py` | Per-paper figure generators (Figs 3–10) + table formatters | works |
 | `src/pearl_tabpfn/wacv/` | calibration, pathway_maps, stats | works (stubs for some) |
-| `src/pearl_tabpfn/survival/` | TCGA loader + AB-MIL + Cox + C-index | **not yet built** (smoke verified the pipeline is reachable) |
+| `src/pearl_tabpfn/survival/` | TCGA-BRCA loader + AB-MIL + Cox + C-index | works (needs WSIs on disk to actually train) |
 | `slurm/wacv/` | Nova SBATCH scripts | works |
 | `docs/WACV_PIPELINE.md` | Source of truth for the WACV characterization protocol | works |
 | `docs/REPRODUCIBILITY.md` / `docs/APPLE_TO_APPLE.md` | End-to-end recipe and apple-to-apple flag detail | being merged into this README |
