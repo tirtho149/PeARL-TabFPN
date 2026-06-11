@@ -1,0 +1,118 @@
+{
+  "per_fold": [
+    {
+      "gene": {
+        "PCC": 0.6085698008537292,
+        "PCC_per_dim_mean": 0.48044177889823914,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.022140108048915863,
+        "MAE": 0.11179335415363312,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "pathway": {
+        "PCC": 0.6109700798988342,
+        "PCC_per_dim_mean": 0.3727717101573944,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.02358672022819519,
+        "MAE": 0.12114434689283371,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "gene": {
+        "PCC": 0.6234682202339172,
+        "PCC_per_dim_mean": 0.4953702986240387,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.021638739854097366,
+        "MAE": 0.10929397493600845,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "pathway": {
+        "PCC": 0.6189224123954773,
+        "PCC_per_dim_mean": 0.3856295645236969,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.023298632353544235,
+        "MAE": 0.12040562182664871,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "gene": {
+        "PCC": 0.6203007102012634,
+        "PCC_per_dim_mean": 0.4920116662979126,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.02168257161974907,
+        "MAE": 0.11042111366987228,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "pathway": {
+        "PCC": 0.6196826100349426,
+        "PCC_per_dim_mean": 0.3833152651786804,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.023203371092677116,
+        "MAE": 0.12018325924873352,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "gene": {
+        "PCC": 0.616180419921875,
+        "PCC_per_dim_mean": 0.484497606754303,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.02195955626666546,
+        "MAE": 0.11061584204435349,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "pathway": {
+        "PCC": 0.6161786913871765,
+        "PCC_per_dim_mean": 0.3776024580001831,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.023364031687378883,
+        "MAE": 0.12060844153165817,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "gene": {
+        "PCC": 0.621453583240509,
+        "PCC_per_dim_mean": 0.4905255138874054,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.02161778137087822,
+        "MAE": 0.1101856604218483,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "pathway": {
+        "PCC": 0.6163517832756042,
+        "PCC_per_dim_mean": 0.38256198167800903,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.023294122889637947,
+        "MAE": 0.12036847323179245,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      }
+    }
+  ],
+  "summary": {
+    "gene": {
+      "PCC_perdim_mean": 0.4885693728923798,
+      "PCC_perdim_std": 0.005377090773020571,
+      "MSE_mean": 0.021807751432061196,
+      "paper_PCC": 0.5868
+    },
+    "pathway": {
+      "PCC_perdim_mean": 0.38037619590759275,
+      "PCC_perdim_std": 0.004615961328586819,
+      "MSE_mean": 0.023349375650286674,
+      "paper_PCC": 0.5055
+    }
+  }
+}

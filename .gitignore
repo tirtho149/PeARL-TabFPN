@@ -1,45 +1,27 @@
-# Data files (downloaded automatically from HuggingFace)
-hest_data/
-*.h5ad
-*.h5
-
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
+*.pyc
 venv/
-.venv
+*.egg-info/
+.ipynb_checkpoints/
 
-# Virtual environments
-.env
-.vscode/
+# Data & caches (large / regenerable)
+hest_data/
+pathway_data/*.gmt
+pathway_data/*.txt
+pathway_data/*.zip
 
-# IDE
-.idea/
-*.swp
-*.swo
-
-# Generated files
-*.log
-*.pdf
-*.synctex.gz
-results/
-comparison_results/
+# Run artifacts
+logs/
+reproduction_results/
+smoke_results/
+_stale_results_may22/
+la_regression/*.npz
+la_regression/*.npy
+la_regression/*.out
+la_regression/*.err
 pearl_outputs/
-pearl_outputs_*/
-reproduction_*/
-pathway_data/
 
-# Local IDE / agent settings
-.claude/
-
-# OS
-.DS_Store
-.AppleDouble
-
-# Temporary
-*.tmp
-.cache/
+# env
+.env
+2510.03455v1.pdf

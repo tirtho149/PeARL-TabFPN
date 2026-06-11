@@ -1,249 +1,183 @@
-# PEaRL with TabPFN: Gene Expression Prediction from Histology
+# PEaRL — Reproduction + TabPFN & LocateAnything-3B extensions
 
-**Submission to IEEE BIBM 2026** — head-to-head comparison of MLP vs TabPFN heads on top of the PEaRL framework (arXiv:2510.03455), under an apple-to-apple reproduction protocol on HEST-1k Breast.
+**Target: WACV 2027.** A faithful, apple-to-apple reproduction of **PEaRL**
+(Pathway-Enhanced Representation Learning, arXiv:2510.03455) on HEST-1k, plus two
+prediction-head extensions, all evaluated under one identical protocol across all
+three cohorts and all metrics.
 
 ## Authors
 
 **Ushashi Bhattacharjee**¹, **Alloy Das**¹, **Saria Hannan**¹, **Tirtho Roy**¹, and **Soumik Sarkar**¹
 
-¹Iowa State University, Ames, IA
+¹Iowa State University, Ames, IA — **Special Thanks**: Koushik Howlader.
 
-**Special Thanks**: Koushik Howlader for valuable discussions and feedback.
+---
 
-## What this repo is
+## Three tracks, one protocol
 
-A controlled head-to-head benchmark of **PEaRL+MLP** vs **PEaRL+TabPFN** on the HEST-1k Breast cancer cohort. The only thing that changes between the two conditions is the stage-2 prediction head; every other knob — UNI v1 backbone with last-4-blocks fine-tuned, 8-neighbor smoothing, Reactome+MSigDB Hallmark pathway pool, raw pathway-target scaling, 5-fold CV — is fixed at the values reported in arXiv:2510.03455. One CLI flag (`--apple-to-apple`) bundles every paper-faithful setting.
+Every track uses the **same** corrected pipeline: same cohorts, same pooled
+preprocessing, same 1,000 HVG gene targets + ssGSEA pathway targets, same
+spot-level 5-fold splits (`KFold`, shuffle, seed 42), same metrics. The **only**
+thing that differs is the stage-2 prediction head / encoder.
 
-Outputs feed the IEEE BIBM 2026 paper draft in `paper/BIBM2026_PEaRL_TabPFN.tex`.
-
-## Datasets
-
-The codebase recognizes three HEST-1k cohorts via `cfg.HEST_IDS` and `cfg.DATASET_PATHWAYS` in `src/pearl_tabpfn/config.py`. Each cohort uses a different anchor section, pathway pool, and pathway-count target taken from the PEaRL paper.
-
-| Cohort | HEST anchor | Pathway count | Env-var override |
+| Track | Owner | Encoder + head | Launch |
 |---|---|---|---|
-| **Breast** (BIBM-2026 canonical) | `TENX99` | 775 (Reactome + MSigDB Hallmark) | `HEST_ID_BREAST` |
-| Skin | `TENX158` | 609 | `HEST_ID_SKIN` |
-| Lymph node | `TENX143` | 1100 | `HEST_ID_LYMPH` |
+| **Baseline — PEaRL+MLP** (the reproduction) | **Tirtho** | UNI v1 backbone + MLP head | `slurm/03_train_baseline_scavenger.sh` |
+| **PEaRL+TabPFN** | **Alloy** | UNI v1 backbone + TabPFN head | `slurm/04_train_tabpfn_scavenger.sh` |
+| **LocateAnything-3B regressor** | **Ushashi** | LA-3B vision tower + MLP head (PEFT) | `la_regression/` 3-stage chain |
 
-**What is actually wired end-to-end:** only **Breast**. The current 5-fold CV runner (`src/pearl_tabpfn/reproduction.py`) filters HEST-v1.1 rows by `organ == "Breast"`, and the SLURM scripts in `slurm/` hard-code `--n-sections 36` against the Breast pool. Skin and Lymph are declared so `pearl_tabpfn.figures.figure5_pathway_counts` can label the per-cohort bar plot referenced in the paper draft, and so future cohort wiring can drop in without re-touching `config.py`. Until that wiring lands, treat the entries above as a roadmap, not an SBATCH target.
+All three report **all metrics** (PCC, MSE, MAE) for **gene and pathway** on **all
+three cohorts** (breast, skin, lymph), each against the paper's reported numbers.
 
-**Per-section protocol (applies to the Breast run today; identical knobs will apply to Skin/Lymph once wired):**
+---
 
-| Item | Value |
-|---|---|
-| Source | **HEST-1k** (`MahmoodLab/hest` on HuggingFace, gated) |
-| Sections used | 36 (deterministically picked from the 117 available Breast rows in `HEST_v1_1_0.csv`) |
-| Per-section input | `hest_data/st/{id}.h5ad` (expression) + `hest_data/patches/{id}.h5` (224×224 H&E patches) |
-| Spots per section (cap) | 400 default, `--max-spots-per-section` |
-| Genes | top-1000 HVGs by pooled variance, Scanpy `flavor="seurat"` |
-| Pathway scoring | ssGSEA per spot |
-| Total payload to download | **~45 GB** for the Breast cohort (incl. WSI patches) |
-| Foundation backbone | **UNI v1** (`MahmoodLab/UNI`, gated DINOv2 ViT-L/16 on 100k WSIs) |
-| Spatial coords | 2-D, included with every spot |
+## Cohorts (arXiv:2510.03455 §4.1)
 
-The metadata CSV ships with the dataset; the actual `.h5ad` and `.h5` files are pulled by `slurm/01_download_data.sh`. The repo currently has 1 sample (`TENX99.h5ad`, 30 MB) checked in for sanity-test purposes only; the full 36-section payload arrives during Phase 01.
+Each cohort is pinned to a single HEST-1k study by `dataset_title` (the generic
+`organ` filter mixes incompatible platforms and must not be used). Selection +
+per-cohort `#sections`, `#pathways`, and paper references live in
+`reproduction.py::COHORTS`.
 
-## End-to-end on Nova (Iowa State HPC)
+| `--cohort` | Study | Organ | Sections | Spots | Pathways |
+|---|---|---|---|---|---|
+| `breast` | Andersson HER2+ breast | Breast | 36 | 13,620 | 775 |
+| `skin` | Ji squamous-cell carcinoma [ST] | Skin | 12 | ~8.7k | 609 |
+| `lymph` | Meylan renal-cell TLS | Kidney | 24 | ~74k | 1100 |
 
-The seven SBATCH scripts under `slurm/` automate every phase. Submit them in order; each is idempotent (re-running just refreshes its phase). All scripts read `PEARL_REPO` (default `$PWD`) and `PEARL_VENV` (default `$PEARL_REPO/venv`) so the same scripts work from any allocation.
+---
 
-### 0. One-time login-node setup
+## 0. One-time setup (everyone)
 
 ```bash
 git clone https://github.com/tirtho149/PeARL-TabFPN.git
 cd PeARL-TabFPN
+git checkout wacv-2027
 
-# HuggingFace token (gated dataset + gated UNI backbone — both required)
-echo "HF_TOKEN=hf_xxx..." >  .env
-echo "HUGGINGFACE_HUB_TOKEN=hf_xxx..." >> .env
+printf 'HF_TOKEN=hf_xxx...\nHUGGINGFACE_HUB_TOKEN=hf_xxx...\n' > .env   # gated HEST + UNI
+# Alloy only (TabPFN): accept license at https://ux.priorlabs.ai, then:
+echo 'TABPFN_TOKEN=...' >> .env
+
+PEARL_REPO=$PWD sbatch slurm/00_install.sh          # venv + editable install
+PEARL_REPO=$PWD sbatch slurm/01_download_data.sh    # HEST-1k payload
 ```
 
-Then in a browser, accept the gating terms at:
-- https://huggingface.co/datasets/MahmoodLab/hest
-- https://huggingface.co/MahmoodLab/UNI
+Accept gating: https://huggingface.co/datasets/MahmoodLab/hest and
+https://huggingface.co/MahmoodLab/UNI. Reference caches (Reactome, MSigDB Hallmark,
+HGNC Ensembl→symbol map) auto-download into `pathway_data/` on first run.
 
-### 1. Submit the seven phases
+---
+
+## 1. Tirtho — Baseline reproduction (PEaRL + MLP)
+
+This is the paper reproduction. Run once per cohort:
 
 ```bash
-# Phase 00 — venv + editable package install (CPU, ~5 min, 4 cpu / 16 GB)
-PEARL_REPO=$PWD sbatch slurm/00_install.sh
-
-# Phase 01 — download HEST-1k Breast cohort (CPU, ~30 min, ~45 GB pulled)
-PEARL_REPO=$PWD sbatch slurm/01_download_data.sh
-
-# Phase 02 — structural validation on stub data (CPU, ~1 min)
-PEARL_REPO=$PWD sbatch slurm/02_validate.sh
-
-# Phase 03 — PEaRL+MLP baseline, 5-fold CV (GPU, ~7 hr on A100/RTX 3090)
-PEARL_REPO=$PWD sbatch slurm/03_train_baseline.sh
-
-# Phase 04 — PEaRL+TabPFN, 5-fold CV (GPU, ~45 hr — the long one)
-PEARL_REPO=$PWD sbatch slurm/04_train_tabpfn.sh
-
-# Phase 06 — render head-to-head BIBM figures (GPU, ~2 min)
-PEARL_REPO=$PWD sbatch slurm/06_generate_figures.sh
+COHORT=breast PEARL_REPO=$PWD sbatch slurm/03_train_baseline_scavenger.sh
+COHORT=skin   PEARL_REPO=$PWD sbatch slurm/03_train_baseline_scavenger.sh
+COHORT=lymph  PEARL_REPO=$PWD sbatch slurm/03_train_baseline_scavenger.sh
 ```
 
-`slurm/05_train_head_to_head.sh` is an alternative to 03+04 — runs both heads in a single ~50 hr bundled job. Use it when your allocation supports one long reservation; use 03+04 when you want the cheap baseline to finish first and free the GPU between phases.
+- Output: `reproduction_results_<cohort>/reproduction_results.json` (per-fold +
+  5-fold mean±std + the cohort's paper reference).
+- ~1.5–3 h/fold × 5 folds (full-backbone UNI). 24 h walltime, scavenger
+  (A100/V100/L40S), preemptible (per-fold results stream to `fold_results.json`).
 
-Every job emails `tirtho@iastate.edu` on BEGIN / END / FAIL (edit the `--mail-user` line in `slurm/*.sh` for a different recipient). Logs land in `logs/pearl_<job>-<jobid>.{out,err}`.
+## 2. Alloy — PEaRL + TabPFN
 
-### 2. Total wall-clock budget
-
-Recommended GPU: **24 GB NVIDIA A100 / RTX 3090 / TITAN RTX**. 16 GB cards work with `--batch-size 64`.
-
-| Phase | Wall time on 24 GB GPU | Bottleneck |
-|---|---|---|
-| 00 install | ~5 min | pip wheels |
-| 01 download | ~30 min | HF mirror network |
-| 02 validate | ~1 min | CPU stub training |
-| 03 baseline (MLP) | **~7 hr** | 5 folds × ~1 hr (last-4-blocks unfrozen UNI forward) |
-| 04 TabPFN-pure | **~45 hr** | 5 folds × ~9 hr (1,775 TabPFNRegressors per fold) |
-| 06 figures | ~2 min | matplotlib |
-| **Total (split 03+04)** | **~53 hr** | dominated by Phase 04 |
-| Total (bundled 05) | ~50 hr | one allocation, no phase boundary |
-
-If you start Phase 00 on a Monday morning and queue all jobs as a dependency chain, expect head-to-head figures to be ready by Thursday morning. On smaller GPUs (16 GB) add ~30% to Phases 03–05.
-
-### 3. Outputs
-
-```
-reproduction_results/
-├── fold_results.json              # incremental — written after each fold
-├── reproduction_results.json      # final: per-fold metrics + 5-fold mean ± std + paper reference
-├── predictions/
-│   ├── fold_0.npz                 # coords, pathway/gene preds + truth (both heads)
-│   ├── fold_1.npz
-│   └── ...
-└── figures/                       # written by Phase 06
-    ├── fig_h2h_1_metric_bars.png
-    ├── fig_h2h_2_contrastive_curves.png
-    ├── ...
-    └── fig_h2h_7_pathway_corr.png
-```
-
-The `summary` block in `reproduction_results.json` fills `\TBD` cells in `paper/BIBM2026_PEaRL_TabPFN.tex` Table 1.
-
-## Local install (laptop / workstation, optional)
-
-For development, smoke tests, or running on a single workstation with a 24 GB GPU:
+Same encoder as the baseline; only the head changes (1 `TabPFNRegressor` per output
+dim). **Needs `TABPFN_TOKEN`** in `.env`. Run once per cohort:
 
 ```bash
-python -m venv venv && source venv/bin/activate
-pip install -e .
-bash SETUP_DATA.sh                  # ~45 GB HEST-1k pull
-python scripts/validate.py          # ~1 min, structural pass/fail
-python scripts/run_reproduction.py --apple-to-apple --n-sections 36 --folds 5
-python scripts/generate_figures.py --results-dir reproduction_results
+COHORT=breast PEARL_REPO=$PWD sbatch slurm/04_train_tabpfn_scavenger.sh
+COHORT=skin   PEARL_REPO=$PWD sbatch slurm/04_train_tabpfn_scavenger.sh
+COHORT=lymph  PEARL_REPO=$PWD sbatch slurm/04_train_tabpfn_scavenger.sh
 ```
 
-`pip install -e .` resolves every dependency from `pyproject.toml` (torch, torchvision, timm, scanpy, tabpfn, …). Tested on Python 3.11, PyTorch 2.5.1+cu121, timm 1.0.26, tabpfn 7.1.1.
+- Output: `reproduction_results_<cohort>_tabpfn/`. Head-to-head with the MLP
+  baseline prints in the same table (`PEaRL+MLP` vs `PEaRL+TabPFN` vs paper).
+- The longest track (one regressor per output dim); 48 h walltime.
 
-For a fast sniff test (5 sections, 2 folds, 5 epochs, ~10 minutes — **does NOT match paper**):
+## 3. Ushashi — LocateAnything-3B regressor (PEFT fine-tune)
+
+Standalone VLM-encoder model: LA-3B's vision tower → MLP regression head, trained
+and evaluated on the **same** data/splits/metrics. "Minimum fine-tune" = frozen
+tower + small head (linear probe); escalate to LoRA on the tower if it doesn't beat
+the baseline. Three chained stages, per cohort:
 
 ```bash
-python scripts/run_reproduction.py --smoke-test
+# Stage 1 — export the cohort (PeARL venv, CPU): same targets + raw patches
+COHORT=breast PEARL_REPO=$PWD sbatch la_regression/export.sbatch
+# Stage 2 — extract LA-3B embeddings (LA .venv, GPU; ~3 min for 13.6k patches)
+COHORT=breast sbatch --dependency=afterok:<export_jobid> la_regression/extract.sbatch
+# Stage 3 — train head + compare to paper (PeARL venv, GPU)
+COHORT=breast sbatch --dependency=afterok:<extract_jobid> la_regression/train.sbatch
 ```
 
-## Headline result
+- Output: `la_regression/la_results_<cohort>.json` (gene/pathway PCC, MSE, MAE vs
+  paper). Embeddings cached in `la_regression/la_embeddings_<cohort>.npz`.
+- LA-3B is gated; uses the LocateAnythingBench `.venv` (transformers 4.57.1) and its
+  `TABPFN`-independent HF token.
+- **Note**: features come from LA-3B's *vision tower* (`extract_feature`), giving a
+  4608-d pooled embedding per patch — a fair encoder-vs-encoder comparison with
+  UNI. A full-VLM variant (LLM hidden states under a prompt) is a future option.
 
-**5-fold cross-validated, HEST-1k Breast cancer (36 sections), apple-to-apple protocol.** Numbers populated after the reproduction run completes; see `reproduction_results.json`.
+---
 
-| Target | **PEaRL+MLP (ours)** | **PEaRL+TabPFN (ours)** | Paper PEaRL (reported) |
-|---|---|---|---|
-| **Gene PCC** ↑ | _TBD_ | _TBD_ | 0.5868 ± 0.0359 |
-| **Pathway PCC** ↑ | _TBD_ | _TBD_ | 0.5055 ± 0.0271 |
-| Gene MSE ↓ | _TBD_ | _TBD_ | 0.0732 ± 0.0033 |
-| Gene MAE ↓ | _TBD_ | _TBD_ | 0.1828 ± 0.0043 |
-| Pathway MSE ↓ | _TBD_ | _TBD_ | 0.0017 ± 0.0001 |
-| Pathway MAE ↓ | _TBD_ | _TBD_ | 0.0314 ± 0.0010 |
+## How to read results (all tracks)
 
-Replace `_TBD_` with the cells from `summary` in `reproduction_results.json` after the run.
+`print_summary` / the JSON report **all metrics**. Compare the **right** row:
 
-## What `--apple-to-apple` bundles
+- **`PCC_perdim`** = mean per-feature Pearson — **the paper's definition**. Compare
+  to the cohort's paper PCC.
+- `PCC(flat)` = global-flatten Pearson (reported for completeness, not the paper's).
+- **MSE / MAE** are on the paper's min-max scale and directly comparable.
 
-| Flag | Setting | Paper alignment |
-|---|---|---|
-| `--smooth-genes --smoothing-k 8` | 8-neighbor spatial smoothing on (CP10K + log1p) gene matrix | matches "8-neighbor smoothing to reduce spot-level noise" |
-| `--min-spots-detected 1000` | Drop genes detected in <1000 spots before HVG selection | matches "filtered out genes detected in fewer than 1,000 spots" |
-| `--hvg-method scanpy` | Scanpy `highly_variable_genes(flavor="seurat")` | matches "highly variable genes (HVGs) were then selected using Scanpy" |
-| `--pathway-sources reactome_msigdb` | Reactome + MSigDB Hallmark gene sets | matches "we integrated gene sets from Reactome and MSigDB" |
-| `--pathway-normalization raw` | Preserve raw ssGSEA score scale (~0.05 std) | matches paper's pathway MSE ~0.0017 |
-| `--unfreeze-last-4-blocks` | UNI's last 4 transformer blocks trainable in stage 1 | matches "fine-tune the last 4 layers of UNI" |
-| `--learnable-temperature` | NT-Xent τ is a learnable scalar (log-parameterized, clamped) | matches "τ > 0 is a learnable temperature" |
-| `--normalization paper` | log1p + per-gene min-max [0,1] for gene targets | matches paper's MSE 0.0732 / MAE 0.1828 scale |
-| `--split section` | `GroupKFold` by section — no within-section spot leakage | matches HEST-Benchmark patient-stratified convention |
-| `--keep-constant-cols` | Do not drop zero-variance target columns from PCC | matches paper (no filter mentioned in arXiv:2510.03455) |
-| `--tabpfn-mode pure` | One `TabPFNRegressor` per output dim across ALL 1,775 dims | this repo's contribution — 1:1 MLP replacement for the head-to-head |
+### Results (filled in as runs complete)
 
-Override individual flags after `--apple-to-apple` to deviate from one knob and keep the rest. Example: `--apple-to-apple --pathway-sources reactome` for a Reactome-only ablation.
+| Cohort | Metric | Tirtho: PEaRL+MLP | Alloy: PEaRL+TabPFN | Ushashi: LA-3B | Paper |
+|---|---|---|---|---|---|
+| Breast | gene PCC | _TBD_ | _TBD_ | 0.489 ± 0.005 | 0.5868 |
+| Breast | pathway PCC | _TBD_ | _TBD_ | 0.380 ± 0.005 | 0.5055 |
+| Skin | gene / pathway PCC | _TBD_ | _TBD_ | _TBD_ | 0.3756 / 0.3523 |
+| Lymph | gene / pathway PCC | _TBD_ | _TBD_ | _TBD_ | 0.2352 / 0.2247 |
 
-### TabPFN modes
+---
 
-| `--tabpfn-mode` | What it does | Use when |
-|---|---|---|
-| **`pure`** | Replace the MLP entirely. One `TabPFNRegressor` per output dim across all 1,775 dims. Slowest. | **Apple-to-apple head-to-head with the MLP baseline** (canonical BIBM 2026 setting). |
-| `refinement` | Fit MLP, then overwrite MLP's prediction on top-k highest-MLP-residual-variance dims with TabPFN's prediction. | Quick TabPFN sniff test on top of a trained MLP. |
-| `residual` | Fit MLP, fit TabPFN on (X, MLP-residual) on top-k dims, blend with α-shrinkage on a 10% holdout. | When you want a guaranteed "never worse than MLP on holdout" hybrid. |
+## What the corrected pipeline fixes
 
-## Architecture
+The original code did not reproduce the paper. The audited fixes (all bundled into
+`--apple-to-apple` + the pooled loader):
 
-Both stages live in the same model class. Stage 1 trains all parameters via NT-Xent contrastive loss between image and pathway embeddings. Stage 2 freezes both encoders and trains only the heads on MSE for genes + pathways.
+| Area | Correction |
+|---|---|
+| Cohort selection | Pin each cohort by `dataset_title` (Breast=36/13,620 spots) — not random `organ` sampling across incompatible platforms. |
+| Pooled preprocessing | Pool sections onto a common gene panel before filter/HVG/ssGSEA (per-section HVG scrambled gene targets on concat). |
+| Gene-ID mapping | Ensembl→HGNC symbols so ssGSEA finds overlap (else all pathway scores were constant). |
+| MSigDB | Fixed the dead Hallmark URL (Broad GSEA-MSigDB), cached locally. |
+| CV split | 5-fold over pooled **spots** (paper protocol), not section GroupKFold. |
+| Target scaling | Per-feature min-max [0,1] genes & pathways (matches paper MSE/MAE). |
+| Metric | Report `PCC_perdim` (mean per-feature Pearson) as the paper-comparable headline. |
 
-```
-patches (B,3,224,224) ──► VisionEncoder (UNI) ──► proj_head ──► h_image (B,256)
-                                                                   │
-                                                                   ▼
-                                                            [head: MLP or TabPFN]
-                                                                   │
-                                                                   ▼
-                                                   gene_pred (B,1000)  pathway_pred (B,775)
+`docs/APPLE_TO_APPLE.md` has the full flag-by-flag protocol.
 
-pathway scores (B,775) + coords (B,2) ──► PathwayEncoder (Transformer) ──► h_path (B,256)
+---
 
-Stage 1: NT-Xent(h_image, h_path) — symmetric contrastive
-Stage 2: MSE(pred, target) on genes + pathways, encoders frozen
-```
-
-Feature caching (in `reproduction.py`): when UNI is fully frozen, features are extracted once per fold and reused. With `--apple-to-apple` (last-4-blocks unfrozen) the cache is stale, so we fall back to the full-backbone path — ~4× slower but paper-faithful.
-
-## File structure
+## File map
 
 | Path | Purpose |
 |---|---|
-| `scripts/run_reproduction.py` | **Primary entry point** — 36-section pooling, 5-fold CV, both heads per fold |
-| `scripts/train_baseline.py` / `scripts/train_tabpfn.py` | Thin wrappers — `--head-mode {mlp,tabpfn}` splits of the same runner |
-| `scripts/validate.py` / `scripts/verify_data.py` | Structural + data-loading smoke tests |
-| `scripts/generate_figures.py` | Renders the BIBM PNGs from saved fold predictions |
-| `src/pearl_tabpfn/reproduction.py` | 5-fold CV engine; cached + full-backbone paths |
-| `src/pearl_tabpfn/baseline.py` | `PEaRL` (MLP head), `SupervisedLoss` |
-| `src/pearl_tabpfn/tabpfn_head.py` | `PEaRLWithTabPFN`, `TabPFNHead` (3 modes), `SupervisedLossTabPFN` |
-| `src/pearl_tabpfn/encoders.py` | `PathwayEncoder`, `VisionEncoder` (UNI / ViT-L/16), `ContrastiveLoss` |
-| `src/pearl_tabpfn/data.py` | HEST-1k loading, ssGSEA, `HESTDataset`, pooled-variance pathway alignment |
-| `src/pearl_tabpfn/eval.py` | `compute_metrics` (PCC / MSE / MAE + drop-constant-cols filter) |
-| `src/pearl_tabpfn/config.py` | Global `cfg` consumed everywhere |
-| `src/pearl_tabpfn/figures.py` | Head-to-head BIBM figure set |
-| `slurm/00_install.sh` … `06_generate_figures.sh` | Nova SBATCH scripts |
-| `docs/APPLE_TO_APPLE.md` | Detailed apple-to-apple protocol + troubleshooting |
-| `docs/REPRODUCIBILITY.md` | Nova end-to-end recipe (this README is a digest of it) |
-| `paper/BIBM2026_PEaRL_TabPFN.tex` | IEEE BIBM 2026 manuscript |
-| `CLAUDE.md` | Repo guidance for future collaborators / Claude Code sessions |
+| `src/pearl_tabpfn/reproduction.py` | CV engine; `COHORTS` registry; cohort selection; metrics |
+| `src/pearl_tabpfn/data.py` | Pooled HEST loading, ssGSEA, gene-ID mapping, raw-patch export |
+| `src/pearl_tabpfn/{baseline,tabpfn_head,encoders,eval}.py` | Model heads, encoders, metrics |
+| `slurm/03_train_baseline_scavenger.sh` | **Tirtho** — baseline, `COHORT=` env |
+| `slurm/04_train_tabpfn_scavenger.sh` | **Alloy** — TabPFN, `COHORT=` env |
+| `la_regression/{export,extract,train}.sbatch` + `*.py` | **Ushashi** — LA-3B 3-stage chain |
+| `paper/BIBM2026_PEaRL_TabPFN.tex` | manuscript draft |
+
+---
 
 ## System requirements
 
-- Python 3.10+ (tested 3.11)
-- NVIDIA GPU with ≥ 22 GB VRAM (24 GB strongly recommended; 16 GB works with `--batch-size 64`)
-- ~50 GB free disk (HEST-1k payload + cache + results)
-- HuggingFace account with accepted UNI + HEST-1k gated terms
-
-## Citation
-
-```bibtex
-@inproceedings{pearl_tabpfn2026,
-  title={PEaRL with Pretrained Tabular Models: Enhancing Gene Expression Prediction from Histology},
-  author={Bhattacharjee, Ushashi and Das, Alloy and Hannan, Saria and Roy, Tirtho and Sarkar, Soumik},
-  booktitle={IEEE International Conference on Bioinformatics and Biomedicine (BIBM)},
-  year={2026}
-}
-```
+- Python 3.11, PyTorch 2.5.1+cu121, timm 1.0.26, tabpfn 8.0.2
+- NVIDIA GPU ≥22 GB (16 GB works with `--batch-size 64`); LA-3B needs ~24 GB
+- HuggingFace account with accepted UNI + HEST-1k terms; `TABPFN_TOKEN` for Track 2

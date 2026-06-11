@@ -667,14 +667,73 @@ def run_one_fold_full_backbone(
 # ----------------------------------------------------------------------------
 
 
-def select_breast_section_ids(metadata_csv: str, n_sections: int, seed: int = 42) -> List[str]:
+# PEaRL's three cohorts, each pinned to a single HEST-1k study by dataset_title
+# (the generic organ filter returns mixed platforms with incompatible gene panels
+# that cannot be pooled). organ + title together uniquely identify the study.
+# n_pathways and the paper's reported metrics are from arXiv:2510.03455 Tables 1-2.
+COHORTS = {
+    "breast": {
+        "organ": "Breast",
+        "title": ("Spatial deconvolution of HER2-positive breast cancer "
+                  "delineates tumor-associated cell type interactions"),
+        "n_sections": 36, "n_pathways": 775,
+        "paper": {
+            "gene":    {"PCC": (0.5868, 0.0359), "MSE": (0.0732, 0.0033), "MAE": (0.1828, 0.0043)},
+            "pathway": {"PCC": (0.5055, 0.0271), "MSE": (0.0017, 0.0001), "MAE": (0.0314, 0.0010)},
+        },
+    },
+    "skin": {
+        "organ": "Skin",
+        "title": "Single Cell and Spatial Analysis of Human Squamous Cell Carcinoma [ST]",
+        "n_sections": 12, "n_pathways": 609,
+        "paper": {
+            "gene":    {"PCC": (0.3756, 0.0148), "MSE": (0.1405, 0.0071), "MAE": (0.2726, 0.0073)},
+            "pathway": {"PCC": (0.3523, 0.0336), "MSE": (0.0029, 0.0002), "MAE": (0.0404, 0.0012)},
+        },
+    },
+    "lymph": {
+        # Paper [27] = Meylan et al renal-cell-carcinoma tertiary lymphoid
+        # structures; filed under organ "Kidney" in HEST, NOT "Lymph node".
+        "organ": "Kidney",
+        "title": ("Tertiary lymphoid structures generate and propagate "
+                  "anti-tumor antibody-producing plasma cells in renal cell cancer"),
+        "n_sections": 24, "n_pathways": 1100,
+        "paper": {
+            "gene":    {"PCC": (0.2352, 0.0145), "MSE": (0.1425, 0.0058), "MAE": (0.2278, 0.0031)},
+            "pathway": {"PCC": (0.2247, 0.0353), "MSE": (0.0028, 0.0003), "MAE": (0.0401, 0.0018)},
+        },
+    },
+}
+
+
+def select_cohort_section_ids(
+    metadata_csv: str, cohort: str = "breast", n_sections: int = None, seed: int = 42
+) -> List[str]:
+    """Select the HEST sections for a PEaRL cohort by (organ, dataset_title)."""
+    spec = COHORTS[cohort]
     df = pd.read_csv(metadata_csv)
-    breast = df[(df.species == "Homo sapiens") & (df.organ == "Breast")].copy()
-    breast = breast.sort_values("id").reset_index(drop=True)
-    n = min(n_sections, len(breast))
+    sub = df[(df.species == "Homo sapiens") & (df.organ == spec["organ"])].copy()
+    matched = sub[sub.get("dataset_title") == spec["title"]].copy()
+    if len(matched) >= 1:
+        sub = matched
+    else:
+        print(
+            f"  WARN: {cohort} dataset_title not found in metadata; falling back "
+            f"to all {spec['organ']}-organ samples (gene panels may be "
+            f"incompatible across platforms)."
+        )
+    sub = sub.sort_values("id").reset_index(drop=True)
+    n_sections = spec["n_sections"] if n_sections is None else n_sections
+    if n_sections >= len(sub):
+        return sub["id"].tolist()
     rng = np.random.default_rng(seed)
-    pick = np.sort(rng.choice(len(breast), size=n, replace=False))
-    return breast.iloc[pick]["id"].tolist()
+    pick = np.sort(rng.choice(len(sub), size=n_sections, replace=False))
+    return sub.iloc[pick]["id"].tolist()
+
+
+def select_breast_section_ids(metadata_csv: str, n_sections: int, seed: int = 42) -> List[str]:
+    """Back-compat wrapper — Breast cohort selection."""
+    return select_cohort_section_ids(metadata_csv, "breast", n_sections, seed)
 
 
 def verify_hest_data(data_dir: str, sample_ids: List[str]) -> None:
@@ -777,8 +836,16 @@ def aggregate_folds(per_fold_results):
         out[variant] = {}
         for target in ("pathway", "gene"):
             agg = {}
-            for k in ("PCC", "MSE", "MAE"):
-                vals = np.array([f[variant][target][k] for f in present], dtype=np.float64)
+            # PCC          = global-flatten Pearson (scale-sensitive across dims).
+            # PCC_per_dim_mean = mean per-feature Pearson — the definition the
+            #                 PEaRL paper and the works it benchmarks (STNet/
+            #                 BLEEP/mclSTExp) report. This is the headline metric
+            #                 to compare against PAPER_BASELINE_BREAST.
+            for k in ("PCC", "PCC_per_dim_mean", "MSE", "MAE"):
+                vals = np.array(
+                    [f[variant][target].get(k, np.nan) for f in present],
+                    dtype=np.float64,
+                )
                 agg[k] = (float(np.nanmean(vals)), float(np.nanstd(vals)))
             agg["n_cols_used"] = int(np.median([f[variant][target]["n_cols_used"] for f in present]))
             agg["n_cols_dropped"] = int(np.median([f[variant][target]["n_cols_dropped"] for f in present]))
@@ -790,17 +857,34 @@ def print_summary(summary, paper):
     print("\n" + "=" * 88)
     print("HEAD-TO-HEAD CROSS-VALIDATED RESULTS (mean ± std)")
     print("=" * 88)
+    print("(PCC = global-flatten Pearson; PCC_perdim = mean per-feature Pearson,")
+    print(" the definition the PEaRL paper reports — compare THIS row to 'PEaRL paper'.)")
     for target in ("pathway", "gene"):
         print(f"\n{target.upper()} EXPRESSION")
-        print(f"  {'Metric':<8} {'PEaRL+MLP (ours)':<22} {'PEaRL+TabPFN (ours)':<22} {'PEaRL paper':<22}")
-        print("  " + "-" * 80)
-        for k in ("PCC", "MSE", "MAE"):
+        print(f"  {'Metric':<12} {'PEaRL+MLP (ours)':<22} {'PEaRL+TabPFN (ours)':<22} {'PEaRL paper':<22}")
+        print("  " + "-" * 84)
+        # The paper's PCC corresponds to the per-feature mean; map it onto our
+        # PCC_per_dim_mean row so the comparison is like-for-like.
+        paper_for = {
+            "PCC": None,
+            "PCC_per_dim_mean": paper[target]["PCC"],
+            "MSE": paper[target]["MSE"],
+            "MAE": paper[target]["MAE"],
+        }
+        labels = {
+            "PCC": "PCC(flat)",
+            "PCC_per_dim_mean": "PCC_perdim",
+            "MSE": "MSE",
+            "MAE": "MAE",
+        }
+        for k in ("PCC", "PCC_per_dim_mean", "MSE", "MAE"):
             b = summary.get("baseline", {}).get(target, {}).get(k)
             t = summary.get("tabpfn", {}).get(target, {}).get(k)
-            pm, ps = paper[target][k]
+            paper_val = paper_for[k]
             b_str = f"{b[0]:.4f}±{b[1]:.4f}" if b else "—"
             t_str = f"{t[0]:.4f}±{t[1]:.4f}" if t else "—"
-            print(f"  {k:<8} {b_str:<22} {t_str:<22} {pm:.4f}±{ps:.4f}")
+            p_str = f"{paper_val[0]:.4f}±{paper_val[1]:.4f}" if paper_val else "—"
+            print(f"  {labels[k]:<12} {b_str:<22} {t_str:<22} {p_str:<22}")
         n_used = (
             summary.get("baseline", {}).get(target, {}).get("n_cols_used")
             or summary.get("tabpfn", {}).get(target, {}).get("n_cols_used")
@@ -863,10 +947,17 @@ def main():
     p.add_argument("--data-dir", default="./hest_data")
     p.add_argument("--metadata-csv", default="./hest_data/HEST_v1_1_0.csv")
     p.add_argument("--output-dir", default="./reproduction_results")
-    p.add_argument("--n-sections", type=int, default=36)
+    p.add_argument(
+        "--cohort", choices=["breast", "skin", "lymph"], default="breast",
+        help="PEaRL cohort. Sets the dataset_title filter, #sections, #pathways, "
+             "and the paper reference metrics (arXiv:2510.03455 Tables 1-2).",
+    )
+    p.add_argument("--n-sections", type=int, default=None,
+                   help="Override #sections (default: cohort's full set).")
     p.add_argument("--max-spots-per-section", type=int, default=400)
     p.add_argument("--n-genes", type=int, default=1000)
-    p.add_argument("--n-pathways", type=int, default=775)
+    p.add_argument("--n-pathways", type=int, default=None,
+                   help="Override #pathways (default: cohort's value).")
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--max-folds", type=int, default=None,
                    help="Run only the first N folds (still split into --folds).")
@@ -916,9 +1007,10 @@ def main():
         "--apple-to-apple", action="store_true",
         help=(
             "Set all paper-faithful defaults at once: --smooth-genes, "
-            "--pathway-sources reactome_msigdb, --pathway-normalization raw, "
+            "--pathway-sources reactome_msigdb, --pathway-normalization minmax, "
             "--unfreeze-last-4-blocks, --normalization paper, "
-            "--split section, --tabpfn-mode pure, --min-spots-detected 1000, "
+            "--split spot (pooled 5-fold over spots, the paper protocol), "
+            "all spots per section, --tabpfn-mode pure, --min-spots-detected 1000, "
             "--hvg-method scanpy, --learnable-temperature, "
             "--keep-constant-cols. Overrides individual flags. This is the "
             "canonical run for the BIBM 2026 paper."
@@ -935,11 +1027,13 @@ def main():
         help="Pathway gene-set sources. Paper uses Reactome + MSigDB.",
     )
     p.add_argument(
-        "--pathway-normalization", choices=["raw", "zscore"], default="zscore",
+        "--pathway-normalization", choices=["raw", "zscore", "minmax"], default="zscore",
         help=(
-            "Pathway target scaling. raw = paper-style (small MSE, scale "
-            "consistent with arXiv:2510.03455 Table 2). zscore = repo legacy "
-            "(unit-variance per dim; inflates MSE ~400× but PCC unchanged)."
+            "Pathway target scaling. minmax = paper-faithful per-pathway [0,1] "
+            "(matches arXiv:2510.03455 Table 2 scale: MSE≈0.0017, MAE≈0.031, "
+            "and makes the global PCC comparable across pathways). "
+            "raw = unscaled ssGSEA (MSE in the thousands; a few high-variance "
+            "pathways dominate the flatten PCC). zscore = unit-variance per dim."
         ),
     )
     p.add_argument(
@@ -989,19 +1083,40 @@ def main():
                    help="Quick mode: 5 sections, 2 folds, 5 epochs.")
     args = p.parse_args()
 
+    # Resolve cohort defaults (sections / pathways / paper reference). Concrete
+    # CLI values and the smoke-test block still override these.
+    _cohort_spec = COHORTS[args.cohort]
+    if args.n_sections is None:
+        args.n_sections = _cohort_spec["n_sections"]
+    if args.n_pathways is None:
+        args.n_pathways = _cohort_spec["n_pathways"]
+    paper_ref = _cohort_spec["paper"]
+
     _configure_cudnn()
 
     if args.apple_to_apple:
         # Bundle: every setting that brings the run into parity with arXiv:2510.03455.
         args.smooth_genes = True
         args.pathway_sources = "reactome_msigdb"
-        args.pathway_normalization = "raw"
+        # Paper-faithful target scale: per-pathway min-max [0,1], the only
+        # scaling consistent with the paper's reported pathway MSE≈0.0017 /
+        # MAE≈0.031 (Table 2). Genes are min-max'd the same way via
+        # normalization="paper".
+        args.pathway_normalization = "minmax"
         args.unfreeze_last_4_blocks = True
         args.normalization = "paper"
-        # Section-stratified k-fold matches the HEST-Benchmark convention
-        # (patient-stratified) which the PEaRL paper most likely follows;
-        # also stricter (no within-section leakage between train and val).
-        args.split = "section"
+        # PAPER PROTOCOL: the paper pools all 36 breast sections (13,620 spots)
+        # and runs 5-fold CV *over spots* — it does NOT hold out whole sections.
+        # This is the standard convention of the works it benchmarks against
+        # (STNet/BLEEP/mclSTExp) and the only setting that reproduces the
+        # reported PCC (0.5868 gene / 0.5055 pathway). Section GroupKFold tests
+        # cross-section generalization — a much harder task that depresses PCC
+        # 5-8×; it remains available via `--split section` as a rigorous,
+        # leakage-free alternative, but it is NOT what the paper reports.
+        args.split = "spot"
+        # Use every spot in each section (paper uses all 13,620). The 400-cap
+        # default is an iteration-speed knob, not paper-faithful.
+        args.max_spots_per_section = 1_000_000
         args.tabpfn_mode = "pure"
         args.min_spots_detected = 1000
         args.hvg_method = "scanpy"   # falls back to seurat-numpy if scanpy missing
@@ -1010,10 +1125,11 @@ def main():
         print(
             "[apple-to-apple] paper-faithful preset enabled:\n"
             "    smooth_genes=True, smoothing_k=8\n"
-            "    pathway_sources=reactome_msigdb, pathway_normalization=raw\n"
+            "    pathway_sources=reactome_msigdb, pathway_normalization=minmax\n"
             "    unfreeze_last_4_blocks=True\n"
             "    normalization=paper (per-gene min-max [0,1])\n"
-            "    split=section (GroupKFold by section, no leakage)\n"
+            "    split=spot (pooled 5-fold over spots — the paper protocol)\n"
+            "    max_spots_per_section=ALL (use every spot, ~13,620 total)\n"
             "    tabpfn_mode=pure (1:1 MLP replacement on all output dims)\n"
             "    min_spots_detected=1000 (paper filter)\n"
             "    hvg_method=scanpy (seurat-flavor; numpy fallback if scanpy missing)\n"
@@ -1040,8 +1156,10 @@ def main():
     print(f"Sections: {args.n_sections}, max_spots/section: {args.max_spots_per_section}")
     print(f"Folds: {args.folds}, n_pathways: {args.n_pathways}, batch_size: {args.batch_size}")
 
-    sample_ids = select_breast_section_ids(args.metadata_csv, args.n_sections, seed=args.seed)
-    print(f"Selected {len(sample_ids)} sections")
+    sample_ids = select_cohort_section_ids(
+        args.metadata_csv, args.cohort, args.n_sections, seed=args.seed
+    )
+    print(f"Selected {len(sample_ids)} sections (cohort={args.cohort})")
 
     # Pre-flight HEST check — fail fast if data is missing, before the long run.
     verify_hest_data(args.data_dir, sample_ids)
@@ -1134,13 +1252,15 @@ def main():
         "sample_ids": sample_ids,
         "per_fold": fold_results,
         "summary": summary,
-        "paper_breast_baseline": PAPER_BASELINE_BREAST,
+        "cohort": args.cohort,
+        "paper_reference": paper_ref,
         "timestamp": datetime.now().isoformat(),
     }
     with open(os.path.join(args.output_dir, "reproduction_results.json"), "w") as f:
         json.dump(out, f, indent=2, default=str)
 
-    print_summary(summary, PAPER_BASELINE_BREAST)
+    print(f"\n[cohort = {args.cohort}]")
+    print_summary(summary, paper_ref)
     print(f"\nResults saved to {args.output_dir}/reproduction_results.json")
 
 

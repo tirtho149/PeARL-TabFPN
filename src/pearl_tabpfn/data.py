@@ -135,7 +135,12 @@ def ssgsea(expr_matrix: np.ndarray, gene_names: List[str], pathways: Dict[str, L
         ranks[s] = rankdata(expr_matrix[s]).astype(np.float32)
 
     gene_idx = {g: i for i, g in enumerate(gene_names)}
-    all_idx = np.arange(n_genes)
+
+    # Total rank mass per spot, computed once. The "out-of-set" rank sum is then
+    # total - signal, which avoids an O(n_genes) reduction per pathway — the
+    # difference between seconds and hours when ssGSEA runs over the full
+    # (~17k-gene) pooled expression matrix instead of a 1k-HVG subset.
+    total = ranks.sum(axis=1)
 
     for p_idx, (_, genes) in enumerate(pathways.items()):
         in_set = np.array([gene_idx[g] for g in genes if g in gene_idx], dtype=np.int64)
@@ -143,15 +148,11 @@ def ssgsea(expr_matrix: np.ndarray, gene_names: List[str], pathways: Dict[str, L
         if n_in == 0:
             continue
         n_out = n_genes - n_in
-        if n_out == 0:
-            scores[:, p_idx] = ranks[:, in_set].sum(axis=1) / n_in
-            continue
-
-        mask = np.ones(n_genes, dtype=bool)
-        mask[in_set] = False
-        out_idx = all_idx[mask]
         signals = ranks[:, in_set].sum(axis=1)
-        noises = ranks[:, out_idx].sum(axis=1)
+        if n_out == 0:
+            scores[:, p_idx] = signals / n_in
+            continue
+        noises = total - signals
         scores[:, p_idx] = signals / n_in - noises / n_out
 
     return scores
@@ -339,6 +340,67 @@ def load_hest_sample(
     return patches, genes, pathway_scores, coords
 
 
+def _load_section_raw(
+    hest_dir: str,
+    sample_id: str,
+    patch_size: int = 224,
+    max_spots: int = 10 ** 9,
+    seed: int = 42,
+    return_raw_patches: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, List[str], np.ndarray]:
+    """Load ONE section's RAW data for pooled preprocessing.
+
+    Unlike `load_hest_sample`, this does NO normalization, gene filtering, HVG
+    selection, smoothing, or ssGSEA — those steps must run once on the *pooled*
+    cohort so that gene columns are identical across sections and the paper's
+    "detected in <1000 spots" filter sees all 13,620 spots (per-section, every
+    section has <1000 spots, so that filter would be a silent no-op).
+
+    Returns:
+        patches:    (n, 3, H, W) float32, ImageNet-normalized
+        raw_X:      (n, n_genes) float32 raw counts (this section's gene panel)
+        gene_names: list[str], length n_genes
+        xy:         (n, 2) float32 raw spatial coordinates (un-normalized)
+    """
+    rng = np.random.default_rng(seed)
+    st_file = os.path.join(hest_dir, "st", f"{sample_id}.h5ad")
+    adata = anndata.read_h5ad(st_file)
+
+    patches_h5 = _find_patch_file(hest_dir, sample_id)
+    img_array, bc_list = _read_patches_h5(patches_h5)
+    bc_map = _build_barcode_map(adata)
+    pairs = _match_barcodes(bc_map, bc_list)
+    if not pairs:
+        raise RuntimeError(f"No barcodes matched for {sample_id}")
+    if len(pairs) > max_spots:
+        pick = np.sort(rng.choice(len(pairs), size=max_spots, replace=False))
+        pairs = [pairs[j] for j in pick]
+
+    obs_idx = np.array([p[0] for p in pairs], dtype=np.int64)
+    img_idx = [p[1] for p in pairs]
+    adata = adata[obs_idx].copy()
+    img_array = np.stack([img_array[j] for j in img_idx], axis=0)
+
+    X = adata.X
+    if hasattr(X, "toarray"):
+        X = X.toarray()
+    raw_X = np.asarray(X, dtype=np.float32)
+    gene_names = list(adata.var_names)
+
+    patches = np.stack(
+        [_process_patch(img_array[i], patch_size) for i in range(len(img_array))],
+        axis=0,
+    ).astype(np.float32)
+    xy = np.asarray(adata.obsm["spatial"], dtype=np.float32)
+    if return_raw_patches:
+        # img_array is already (N, H, W, 3) uint8 RGB in the same spot order as
+        # `patches` — used to feed LA-3B's own image processor (which wants raw
+        # PIL images, not ImageNet-normalized tensors).
+        raw_rgb = np.asarray(img_array, dtype=np.uint8)
+        return patches, raw_X, gene_names, xy, raw_rgb
+    return patches, raw_X, gene_names, xy
+
+
 def load_hest_multi_sample(
     hest_dir: str,
     sample_ids: List[str],
@@ -355,73 +417,184 @@ def load_hest_multi_sample(
     smoothing_k: int = 8,
     min_spots_detected: int = 0,
     hvg_method: str = "dispersion",
+    return_raw_patches: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Load and concatenate multiple HEST-1k sections.
+    Load multiple HEST-1k sections and preprocess them as ONE pooled cohort.
 
-    Pathway columns are aligned across sections by scoring against a shared
-    Reactome dict and selecting the top-`n_pathways` columns by *pooled*
-    variance after concatenation. Without this, top-N-by-variance picks
-    different pathways per section, breaking cross-section training.
+    This is the paper-faithful pipeline (arXiv:2510.03455 §4.1): the 36 breast
+    sections (~13,620 spots) are pooled BEFORE gene filtering, HVG selection,
+    and ssGSEA, so that
+
+      * the "filter genes detected in <1,000 spots" step sees all pooled spots
+        (per-section it is a no-op — each section has only a few hundred spots);
+      * the top-1,000 HVG set is identical across every section, so gene column
+        i is the *same gene* everywhere (per-section HVG picks different genes
+        per section and silently scrambles the regression target on concat);
+      * ssGSEA runs once over the full pooled expression matrix.
+
+    Spatial smoothing is applied per section (kNN must not cross slides), and
+    coordinates are normalized per section to [0,1].
 
     Returns:
         patches:     (total_spots, 3, H, W) float32
-        genes:       (total_spots, n_genes) float32
-        pathways:    (total_spots, n_pathways) float32
+        genes:       (total_spots, n_genes) float32   (shared HVG set)
+        pathways:    (total_spots, n_pathways) float32 (shared pathway set)
         coords:      (total_spots, 2) float32 (per-section [0,1] normalized)
         section_ids: (total_spots,) int64 — same index for spots from same section
     """
+    import pandas as pd
+
     pathway_dict = _load_pathways(sources=pathway_sources)
     if verbose:
         print(f"Pathways loaded ({pathway_sources}): {len(pathway_dict)}")
 
-    parts = []
+    # --- 1. Load every section's RAW expression on its own gene panel. ---
+    parts = []  # (patches, raw_X, gene_names, xy, section_idx, raw_rgb|None)
     for i, sid in enumerate(sample_ids):
         try:
-            p, g, pw_full, c = load_hest_sample(
+            out = _load_section_raw(
                 hest_dir=hest_dir,
                 sample_id=sid,
-                n_genes=n_genes,
-                n_pathways=n_pathways,
                 patch_size=patch_size,
                 max_spots=max_spots_per_section,
                 seed=seed + i,
-                normalization=normalization,
-                pathway_dict=pathway_dict,
-                return_full_pathways=True,
-                smooth_genes=smooth_genes,
-                smoothing_k=smoothing_k,
-                min_spots_detected=min_spots_detected,
-                hvg_method=hvg_method,
+                return_raw_patches=return_raw_patches,
             )
+            if return_raw_patches:
+                p, raw_X, gnames, xy, raw_rgb = out
+            else:
+                p, raw_X, gnames, xy = out
+                raw_rgb = None
         except Exception as e:
             if verbose:
                 print(f"  [{i+1}/{len(sample_ids)}] {sid}: SKIP ({type(e).__name__}: {e})")
             continue
-        parts.append((p, g, pw_full, c, i))
+        parts.append((p, raw_X, gnames, xy, i, raw_rgb))
         if verbose:
-            print(f"  [{i+1}/{len(sample_ids)}] {sid}: {p.shape[0]} spots")
+            print(f"  [{i+1}/{len(sample_ids)}] {sid}: {p.shape[0]} spots, {raw_X.shape[1]} genes")
 
     if not parts:
         raise RuntimeError("No samples loaded successfully")
 
-    patches = np.concatenate([t[0] for t in parts], axis=0)
-    genes = np.concatenate([t[1] for t in parts], axis=0)
-    pw_full = np.concatenate([t[2] for t in parts], axis=0)
-    coords = np.concatenate([t[3] for t in parts], axis=0)
-    section_ids = np.concatenate(
-        [np.full(t[0].shape[0], t[4], dtype=np.int64) for t in parts]
-    )
+    # --- 2. Common gene panel = intersection across sections (stable order). ---
+    common = set(parts[0][2])
+    for t in parts[1:]:
+        common &= set(t[2])
+    if not common:
+        raise RuntimeError("Sections share no common genes — cannot pool.")
+    common_genes = sorted(common)
+    gene_pos = {g: j for j, g in enumerate(common_genes)}
+    if verbose:
+        print(f"Common gene panel across {len(parts)} sections: {len(common_genes)} genes")
 
-    # Global top-N pathway selection by pooled variance. The PEaRL paper's
-    # reported pathway MSE (~0.0017 on Breast) implies raw-ssGSEA scaling
-    # (std ≈ 0.05). z-normalization (std=1) inflates MSE by ~400× — PCC is
-    # scale-invariant per-dim but not in the global flatten metric. Use 'raw'
-    # for apple-to-apple parity with the paper.
+    # --- 3. Reindex each section onto the common panel and concatenate. ---
+    patches_list, raw_list, coord_list, secid_list, rawrgb_list = [], [], [], [], []
+    for p, raw_X, gnames, xy, sidx, raw_rgb in parts:
+        col = np.full(len(gnames), -1, dtype=np.int64)
+        for j, g in enumerate(gnames):
+            pos = gene_pos.get(g)
+            if pos is not None:
+                col[j] = pos
+        take = col >= 0
+        reindexed = np.zeros((raw_X.shape[0], len(common_genes)), dtype=np.float32)
+        reindexed[:, col[take]] = raw_X[:, take]
+        patches_list.append(p)
+        raw_list.append(reindexed)
+        if return_raw_patches:
+            rawrgb_list.append(raw_rgb)
+        # Per-section [0,1] coordinate normalization (matches legacy behavior).
+        cmin = xy.min(0, keepdims=True); cmax = xy.max(0, keepdims=True)
+        coord_list.append(((xy - cmin) / (cmax - cmin + 1e-6)).astype(np.float32))
+        secid_list.append(np.full(p.shape[0], sidx, dtype=np.int64))
+
+    patches = np.concatenate(patches_list, axis=0)
+    pooled_raw = np.concatenate(raw_list, axis=0)
+    coords = np.concatenate(coord_list, axis=0)
+    section_ids = np.concatenate(secid_list, axis=0)
+    raw_patches = np.concatenate(rawrgb_list, axis=0) if return_raw_patches else None
+
+    # --- 4. Pooled gene filter: detected (count>0) in >= N spots across cohort. ---
+    if min_spots_detected > 0:
+        n_detected = (pooled_raw > 0).sum(axis=0)
+        keep_g = n_detected >= min_spots_detected
+        if keep_g.sum() == 0:
+            print(
+                f"  WARN: min_spots_detected={min_spots_detected} kept 0 genes "
+                f"on the pooled cohort; keeping all genes."
+            )
+        else:
+            pooled_raw = pooled_raw[:, keep_g]
+            common_genes = [g for g, k in zip(common_genes, keep_g) if k]
+            if verbose:
+                print(
+                    f"Pooled gene filter (<{min_spots_detected} spots): "
+                    f"{int(keep_g.sum())} of {keep_g.size} genes kept"
+                )
+
+    # --- 5. CP10k + log1p (per spot). ---
+    pooled_expr = pooled_raw / (pooled_raw.sum(axis=1, keepdims=True) + 1e-10) * 1e4
+    pooled_expr = np.log1p(pooled_expr).astype(np.float32)
+
+    # --- 6. Per-section 8-neighbor spatial smoothing (kNN within slide only). ---
+    if smooth_genes:
+        for sidx in np.unique(section_ids):
+            m = section_ids == sidx
+            pooled_expr[m] = apply_spatial_smoothing(
+                pooled_expr[m], coords[m], k=smoothing_k
+            )
+
+    # --- 7. ssGSEA once over the full pooled expression matrix. ---
+    # HEST var_names are Ensembl IDs; pathway gene sets are HGNC symbols. Map
+    # IDs to symbols so ssGSEA actually finds gene-set overlap (genes with no
+    # symbol keep their Ensembl ID and simply never match a pathway).
+    ens2sym = _ensembl_to_symbol()
+    gene_symbols = [ens2sym.get(g, g) for g in common_genes]
+    n_mappable = sum(1 for g in common_genes if g in ens2sym)
+    pw_full = ssgsea(pooled_expr, gene_symbols, pathway_dict)
+    if verbose:
+        n_overlap = len(set(gene_symbols) & {x for v in pathway_dict.values() for x in v})
+        print(
+            f"ssGSEA: {n_mappable}/{len(common_genes)} genes mapped to symbols, "
+            f"{n_overlap} overlap pathway gene sets"
+        )
+
+    # --- 8. Top-N HVG (shared set) → gene regression target. ---
+    ad = anndata.AnnData(
+        X=pooled_expr,
+        var=pd.DataFrame(index=common_genes),
+    )
+    top_genes = _select_hvg(ad, pooled_expr, n_genes, method=hvg_method)
+    genes = pooled_expr[:, top_genes]
+    if genes.shape[1] < n_genes:  # pad if fewer than n_genes available
+        pad = np.zeros((genes.shape[0], n_genes - genes.shape[1]), dtype=np.float32)
+        genes = np.concatenate([genes, pad], axis=1)
+
+    # --- 9. Gene-target normalization (paper = per-gene min-max [0,1]). ---
+    if normalization == "paper":
+        gmin = genes.min(0, keepdims=True); gmax = genes.max(0, keepdims=True)
+        genes = ((genes - gmin) / (gmax - gmin + 1e-6)).astype(np.float32)
+    elif normalization == "paper_zscore":
+        gmean = genes.mean(0, keepdims=True); gstd = genes.std(0, keepdims=True)
+        genes = ((genes - gmean) / (gstd + 1e-6)).astype(np.float32)
+    # "paper_log1p_only" leaves genes in log1p space.
+    genes = genes.astype(np.float32)
+
+    # --- 10. Top-N pathway selection by pooled variance + target scaling. ---
     col_std = pw_full.std(axis=0)
     keep = np.argsort(col_std)[-n_pathways:][::-1]
     pathways = pw_full[:, keep]
-    if pathway_normalization == "zscore":
+    if pathway_normalization == "minmax":
+        # Per-pathway min-max to [0,1]. This is the paper-faithful scaling:
+        # arXiv:2510.03455 reports pathway MSE ≈ 0.0017 / MAE ≈ 0.031 on Breast,
+        # which is only consistent with bounded [0,1] targets (the same scaling
+        # the paper uses for genes). It also makes the global-flatten PCC
+        # comparable across pathways of very different raw ssGSEA magnitudes
+        # (raw scaling lets a few high-variance pathways dominate the metric).
+        pmin = pathways.min(0, keepdims=True)
+        pmax = pathways.max(0, keepdims=True)
+        pathways = ((pathways - pmin) / (pmax - pmin + 1e-6)).astype(np.float32)
+    elif pathway_normalization == "zscore":
         pathways = (
             (pathways - pathways.mean(0)) / (pathways.std(0) + 1e-6)
         ).astype(np.float32)
@@ -429,7 +602,8 @@ def load_hest_multi_sample(
         pathways = pathways.astype(np.float32)
     else:
         raise ValueError(
-            f"pathway_normalization must be 'raw' or 'zscore', got {pathway_normalization!r}"
+            f"pathway_normalization must be 'raw', 'zscore', or 'minmax', "
+            f"got {pathway_normalization!r}"
         )
 
     if verbose:
@@ -440,6 +614,8 @@ def load_hest_multi_sample(
             f"smoothing={'on' if smooth_genes else 'off'})"
         )
 
+    if return_raw_patches:
+        return patches, genes, pathways, coords, section_ids, raw_patches
     return patches, genes, pathways, coords, section_ids
 
 
@@ -582,12 +758,44 @@ _REACTOME_GMT_URL = "https://reactome.org/download/current/ReactomePathways.gmt.
 # uses Reactome + MSigDB; without Hallmark, ~50 high-signal cancer pathways are
 # missing from the pool that ssGSEA + variance ranking can pick from.
 _MSIGDB_HALLMARK_URLS = (
-    # Primary: GitHub-hosted GMT (no auth required).
-    "https://raw.githubusercontent.com/igordot/msigdb/main/data/h.all.v2023.1.Hs.symbols.gmt",
+    # Primary: Broad GSEA-MSigDB official release (no auth for the symbols GMT).
+    "https://data.broadinstitute.org/gsea-msigdb/msigdb/release/2023.2.Hs/h.all.v2023.2.Hs.symbols.gmt",
     # Mirror.
     "https://raw.githubusercontent.com/RasmussenLab/msigdb-mirror/master/h.all.v7.5.1.symbols.gmt",
 )
 _PATHWAY_CACHE_DIR = os.environ.get("PEARL_PATHWAY_CACHE", "./pathway_data")
+# HGNC complete set — maps Ensembl gene IDs (ENSG...) to HGNC symbols. HEST-1k
+# h5ad files use Ensembl IDs as var_names, but Reactome/MSigDB gene sets are
+# keyed by symbol. Without this mapping, ssGSEA finds ZERO gene-set overlap and
+# every pathway score collapses to a constant — silently producing meaningless
+# pathway targets.
+_HGNC_URL = (
+    "https://storage.googleapis.com/public-download-files/hgnc/tsv/tsv/"
+    "hgnc_complete_set.txt"
+)
+
+
+def _ensembl_to_symbol(cache_dir: str = None) -> Dict[str, str]:
+    """Return {ensembl_gene_id: HGNC_symbol}, downloading+caching HGNC once."""
+    import csv
+
+    cache_dir = cache_dir or _PATHWAY_CACHE_DIR
+    os.makedirs(cache_dir, exist_ok=True)
+    tsv_path = os.path.join(cache_dir, "hgnc_complete_set.txt")
+    if not os.path.isfile(tsv_path):
+        import urllib.request
+        print(f"Downloading HGNC Ensembl→symbol map from {_HGNC_URL} ...")
+        urllib.request.urlretrieve(_HGNC_URL, tsv_path)
+
+    mapping: Dict[str, str] = {}
+    with open(tsv_path, encoding="utf-8", errors="replace") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            ens = (row.get("ensembl_gene_id") or "").strip()
+            sym = (row.get("symbol") or "").strip()
+            if ens and sym:
+                mapping[ens] = sym
+    return mapping
 
 
 def _load_pathways_from_reactome(
