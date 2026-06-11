@@ -330,29 +330,52 @@ def compute_metrics(predictions, targets, drop_constant_cols: bool = True):
     else:
         pcc, _ = pearsonr(pred_flat, true_flat)
 
-    # Per-dim mean PCC — what spatial-transcriptomics papers usually report
-    # (paper PEaRL included). Less dominated by scale/normalization than the
-    # global flatten PCC, and better at surfacing gains on a subset of dims.
+    # Per-dim mean correlations — what spatial-transcriptomics papers usually
+    # report (paper PEaRL included). Less dominated by scale/normalization than
+    # the global flatten, and better at surfacing gains on a subset of dims.
+    # We compute, per feature: Pearson (PCC), Spearman (SCC), and R^2
+    # (coefficient of determination), averaging over non-constant dims.
+    from scipy.stats import spearmanr  # local import; pearsonr already imported above
     if predictions.ndim > 1 and predictions.shape[1] > 0:
-        per_dim = []
+        per_pcc, per_scc, per_r2 = [], [], []
         for d in range(predictions.shape[1]):
             p = predictions[:, d]; t = targets[:, d]
             if np.std(p) < 1e-12 or np.std(t) < 1e-12:
                 continue
             r, _ = pearsonr(p, t)
             if not np.isnan(r):
-                per_dim.append(r)
-        pcc_per_dim = float(np.mean(per_dim)) if per_dim else float("nan")
-        pcc_per_dim_n = len(per_dim)
+                per_pcc.append(r)
+            rs, _ = spearmanr(p, t)
+            if not np.isnan(rs):
+                per_scc.append(rs)
+            ss_res = float(np.sum((t - p) ** 2))
+            ss_tot = float(np.sum((t - t.mean()) ** 2))
+            if ss_tot > 1e-12:
+                per_r2.append(1.0 - ss_res / ss_tot)
+        pcc_per_dim = float(np.mean(per_pcc)) if per_pcc else float("nan")
+        pcc_per_dim_n = len(per_pcc)
+        scc_per_dim = float(np.mean(per_scc)) if per_scc else float("nan")
+        r2_per_dim = float(np.mean(per_r2)) if per_r2 else float("nan")
     else:
-        pcc_per_dim = float("nan")
+        pcc_per_dim = scc_per_dim = r2_per_dim = float("nan")
         pcc_per_dim_n = 0
 
+    # Global-flatten Spearman (companion to the flatten PCC).
+    if np.std(pred_flat) < 1e-12 or np.std(true_flat) < 1e-12:
+        scc = float("nan")
+    else:
+        scc = float(spearmanr(pred_flat, true_flat)[0])
+
+    mse = float(np.mean((predictions - targets) ** 2))
     return {
         "PCC": float(pcc),
         "PCC_per_dim_mean": pcc_per_dim,
         "PCC_per_dim_n": pcc_per_dim_n,
-        "MSE": float(np.mean((predictions - targets) ** 2)),
+        "SCC": scc,
+        "SCC_per_dim_mean": scc_per_dim,
+        "R2_per_dim_mean": r2_per_dim,
+        "MSE": mse,
+        "RMSE": float(np.sqrt(mse)),
         "MAE": float(np.mean(np.abs(predictions - targets))),
         "n_cols_used": n_kept,
         "n_cols_dropped": n_total - n_kept,

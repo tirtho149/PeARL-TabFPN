@@ -841,7 +841,8 @@ def aggregate_folds(per_fold_results):
             #                 PEaRL paper and the works it benchmarks (STNet/
             #                 BLEEP/mclSTExp) report. This is the headline metric
             #                 to compare against PAPER_BASELINE_BREAST.
-            for k in ("PCC", "PCC_per_dim_mean", "MSE", "MAE"):
+            for k in ("PCC", "PCC_per_dim_mean", "SCC", "SCC_per_dim_mean",
+                      "R2_per_dim_mean", "MSE", "RMSE", "MAE"):
                 vals = np.array(
                     [f[variant][target].get(k, np.nan) for f in present],
                     dtype=np.float64,
@@ -864,20 +865,28 @@ def print_summary(summary, paper):
         print(f"  {'Metric':<12} {'PEaRL+MLP (ours)':<22} {'PEaRL+TabPFN (ours)':<22} {'PEaRL paper':<22}")
         print("  " + "-" * 84)
         # The paper's PCC corresponds to the per-feature mean; map it onto our
-        # PCC_per_dim_mean row so the comparison is like-for-like.
+        # PCC_per_dim_mean row so the comparison is like-for-like. SCC/R2/RMSE
+        # have no paper reference (paper reports only PCC/MSE/MAE).
         paper_for = {
             "PCC": None,
             "PCC_per_dim_mean": paper[target]["PCC"],
+            "SCC_per_dim_mean": None,
+            "R2_per_dim_mean": None,
             "MSE": paper[target]["MSE"],
+            "RMSE": None,
             "MAE": paper[target]["MAE"],
         }
         labels = {
             "PCC": "PCC(flat)",
             "PCC_per_dim_mean": "PCC_perdim",
+            "SCC_per_dim_mean": "SCC_perdim",
+            "R2_per_dim_mean": "R2_perdim",
             "MSE": "MSE",
+            "RMSE": "RMSE",
             "MAE": "MAE",
         }
-        for k in ("PCC", "PCC_per_dim_mean", "MSE", "MAE"):
+        for k in ("PCC", "PCC_per_dim_mean", "SCC_per_dim_mean",
+                  "R2_per_dim_mean", "MSE", "RMSE", "MAE"):
             b = summary.get("baseline", {}).get(target, {}).get(k)
             t = summary.get("tabpfn", {}).get(target, {}).get(k)
             paper_val = paper_for[k]

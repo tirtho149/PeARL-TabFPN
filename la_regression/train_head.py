@@ -95,26 +95,32 @@ def main():
         per_fold.append({"gene": gm, "pathway": pm})
         print(f"fold {fi}: gene PCC={gm['PCC_per_dim_mean']:.4f} pathway PCC={pm['PCC_per_dim_mean']:.4f}")
 
+    keys = ("PCC_per_dim_mean", "PCC", "SCC_per_dim_mean", "R2_per_dim_mean", "MSE", "RMSE", "MAE")
     summary = {}
     for tgt in ("gene", "pathway"):
         agg = {}
-        for k in ("PCC_per_dim_mean", "PCC", "MSE", "MAE"):
-            v = np.array([f[tgt][k] for f in per_fold], dtype=np.float64)
+        for k in keys:
+            v = np.array([f[tgt].get(k, np.nan) for f in per_fold], dtype=np.float64)
             agg[k] = (float(np.nanmean(v)), float(np.nanstd(v)))
         agg["paper"] = paper[tgt]
         summary[tgt] = agg
     json.dump({"cohort": args.cohort, "per_fold": per_fold, "summary": summary},
               open(out, "w"), indent=2, default=str)
 
+    # paper has only PCC/MSE/MAE; map onto our rows, "—" elsewhere.
+    paper_row = {"PCC_per_dim_mean": "PCC", "MSE": "MSE", "MAE": "MAE"}
+    label = {"PCC_per_dim_mean": "PCC_perdim", "PCC": "PCC_flat",
+             "SCC_per_dim_mean": "SCC_perdim", "R2_per_dim_mean": "R2_perdim",
+             "MSE": "MSE", "RMSE": "RMSE", "MAE": "MAE"}
     print(f"\n=== LA-3B regressor (frozen tower + MLP head) — cohort={args.cohort}, 5-fold ===")
-    print(f"  {'metric':<14}{'LA-3B (ours)':<22}{'PEaRL paper':<22}")
     for tgt in ("gene", "pathway"):
         s = summary[tgt]; pp = s["paper"]
-        print(f"  -- {tgt} --")
-        print(f"  {'PCC_perdim':<14}{s['PCC_per_dim_mean'][0]:.4f}±{s['PCC_per_dim_mean'][1]:.4f}      {pp['PCC'][0]:.4f}±{pp['PCC'][1]:.4f}")
-        print(f"  {'PCC_flat':<14}{s['PCC'][0]:.4f}±{s['PCC'][1]:.4f}      —")
-        print(f"  {'MSE':<14}{s['MSE'][0]:.4f}±{s['MSE'][1]:.4f}      {pp['MSE'][0]:.4f}±{pp['MSE'][1]:.4f}")
-        print(f"  {'MAE':<14}{s['MAE'][0]:.4f}±{s['MAE'][1]:.4f}      {pp['MAE'][0]:.4f}±{pp['MAE'][1]:.4f}")
+        print(f"  -- {tgt} --   {'metric':<12}{'LA-3B (ours)':<20}{'PEaRL paper':<18}")
+        for k in keys:
+            ours = f"{s[k][0]:.4f}±{s[k][1]:.4f}"
+            pk = paper_row.get(k)
+            ref = f"{pp[pk][0]:.4f}±{pp[pk][1]:.4f}" if pk else "—"
+            print(f"  {'':<12}{label[k]:<12}{ours:<20}{ref:<18}")
     print(f"saved {out}")
 
 
