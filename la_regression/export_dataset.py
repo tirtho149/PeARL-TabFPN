@@ -56,7 +56,8 @@ def main():
 
     np.savez(out, raw_patches=raw, genes=genes.astype(np.float32),
              pathways=pathways.astype(np.float32),
-             section_ids=section_ids.astype(np.int64), fold=fold)
+             section_ids=section_ids.astype(np.int64), fold=fold,
+             coords=coords.astype(np.float32))
     print(f"Saved {out} ({os.path.getsize(out)/1e9:.2f} GB); "
           f"fold sizes {[int((fold==i).sum()) for i in range(5)]}")
 

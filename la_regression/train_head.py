@@ -83,17 +83,28 @@ def main():
     X = d["embeddings"].astype(np.float32)
     g = d["genes"].astype(np.float32); p = d["pathways"].astype(np.float32)
     fold = d["fold"]
+    coords = d["coords"] if "coords" in d else np.zeros((len(fold), 2), np.float32)
+    section_ids = d["section_ids"] if "section_ids" in d else np.zeros(len(fold), np.int64)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[{args.cohort}] LA embeddings {X.shape} | device {device}")
 
+    # Accumulate per-spot validation predictions across folds (each spot is in
+    # exactly one val fold) so the head-to-head figures can draw spatial maps and
+    # gene/pathway correlation matrices, matching PeARL's predictions/fold_*.npz.
+    gene_pred = np.zeros_like(g); path_pred = np.zeros_like(p)
     per_fold = []
     for fi in range(5):
         va = fold == fi; tr = ~va
         pg, pp = run_fold(X[tr], g[tr], p[tr], X[va], g[va], p[va], device)
+        gene_pred[va] = pg; path_pred[va] = pp
         gm = compute_metrics(pg, g[va], drop_constant_cols=False)
         pm = compute_metrics(pp, p[va], drop_constant_cols=False)
         per_fold.append({"gene": gm, "pathway": pm})
         print(f"fold {fi}: gene PCC={gm['PCC_per_dim_mean']:.4f} pathway PCC={pm['PCC_per_dim_mean']:.4f}")
+
+    np.savez(os.path.join(HERE, f"la_predictions_{args.cohort}.npz"),
+             gene_pred=gene_pred, gene_true=g, path_pred=path_pred, path_true=p,
+             coords=coords, section_ids=section_ids, fold=fold)
 
     keys = ("PCC_per_dim_mean", "PCC", "SCC_per_dim_mean", "R2_per_dim_mean", "MSE", "RMSE", "MAE")
     summary = {}

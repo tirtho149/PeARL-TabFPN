@@ -62,6 +62,7 @@ def main():
         pathways=d["pathways"],
         section_ids=d["section_ids"],
         fold=d["fold"],
+        coords=d["coords"] if "coords" in d else np.zeros((n, 2), np.float32),
     )
     print(f"[extract] saved {OUT}  embeddings {embs.shape} in {(time.time()-t0)/60:.1f} min")
 
