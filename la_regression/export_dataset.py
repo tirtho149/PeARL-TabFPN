@@ -44,7 +44,7 @@ def main():
         max_spots_per_section=10 ** 9, normalization="paper", seed=42,
         pathway_sources="reactome_msigdb", pathway_normalization="minmax",
         smooth_genes=True, smoothing_k=8, min_spots_detected=1000,
-        hvg_method="scanpy", return_raw_patches=True,
+        hvg_method="scanpy", return_raw_patches=True, norm_patches=False,
     )
     n = raw.shape[0]
     print(f"Pooled: {n} spots | genes {genes.shape} | pathways {pathways.shape} | raw {raw.shape}")

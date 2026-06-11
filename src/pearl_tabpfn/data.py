@@ -347,8 +347,14 @@ def _load_section_raw(
     max_spots: int = 10 ** 9,
     seed: int = 42,
     return_raw_patches: bool = False,
+    norm_patches: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, List[str], np.ndarray]:
     """Load ONE section's RAW data for pooled preprocessing.
+
+    `norm_patches=False` skips building the ImageNet-normalized patch tensor
+    (needed only by the PeARL UNI path). For the LA export — which wants raw RGB
+    only — skipping it avoids a large float32 allocation (e.g. ~44 GB for the
+    74k-spot lymph cohort).
 
     Unlike `load_hest_sample`, this does NO normalization, gene filtering, HVG
     selection, smoothing, or ssGSEA — those steps must run once on the *pooled*
@@ -387,10 +393,13 @@ def _load_section_raw(
     raw_X = np.asarray(X, dtype=np.float32)
     gene_names = list(adata.var_names)
 
-    patches = np.stack(
-        [_process_patch(img_array[i], patch_size) for i in range(len(img_array))],
-        axis=0,
-    ).astype(np.float32)
+    if norm_patches:
+        patches = np.stack(
+            [_process_patch(img_array[i], patch_size) for i in range(len(img_array))],
+            axis=0,
+        ).astype(np.float32)
+    else:
+        patches = np.empty((len(img_array), 0), dtype=np.float32)  # placeholder
     xy = np.asarray(adata.obsm["spatial"], dtype=np.float32)
     if return_raw_patches:
         # img_array is already (N, H, W, 3) uint8 RGB in the same spot order as
@@ -418,6 +427,7 @@ def load_hest_multi_sample(
     min_spots_detected: int = 0,
     hvg_method: str = "dispersion",
     return_raw_patches: bool = False,
+    norm_patches: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load multiple HEST-1k sections and preprocess them as ONE pooled cohort.
@@ -460,6 +470,7 @@ def load_hest_multi_sample(
                 max_spots=max_spots_per_section,
                 seed=seed + i,
                 return_raw_patches=return_raw_patches,
+                norm_patches=norm_patches,
             )
             if return_raw_patches:
                 p, raw_X, gnames, xy, raw_rgb = out
@@ -508,7 +519,7 @@ def load_hest_multi_sample(
         coord_list.append(((xy - cmin) / (cmax - cmin + 1e-6)).astype(np.float32))
         secid_list.append(np.full(p.shape[0], sidx, dtype=np.int64))
 
-    patches = np.concatenate(patches_list, axis=0)
+    patches = np.concatenate(patches_list, axis=0) if norm_patches else None
     pooled_raw = np.concatenate(raw_list, axis=0)
     coords = np.concatenate(coord_list, axis=0)
     section_ids = np.concatenate(secid_list, axis=0)
@@ -608,7 +619,7 @@ def load_hest_multi_sample(
 
     if verbose:
         print(
-            f"Pooled: {patches.shape[0]} spots, {len(parts)} sections, "
+            f"Pooled: {pooled_raw.shape[0]} spots, {len(parts)} sections, "
             f"genes {genes.shape}, pathways {pathways.shape} "
             f"(picked top-{n_pathways} of {pw_full.shape[1]}, scale={pathway_normalization}, "
             f"smoothing={'on' if smooth_genes else 'off'})"
