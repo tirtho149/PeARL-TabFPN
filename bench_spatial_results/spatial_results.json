@@ -1,0 +1,179 @@
+{
+  "args": {
+    "cache_path": "./bench_tabpfn_results/bench_cache.npz",
+    "output_dir": "./bench_spatial_results",
+    "data_dir": "./hest_data",
+    "metadata_csv": "./hest_data/HEST_v1_1_0.csv",
+    "n_sections": 36,
+    "max_spots_per_section": 400,
+    "n_genes": 1000,
+    "n_pathways": 775,
+    "normalization": "paper_log1p_only",
+    "K_list": "0,4,8,16,32",
+    "epochs": 200,
+    "patience": 20,
+    "lr": 0.001,
+    "weight_decay": 0.001,
+    "hidden_dim": 256,
+    "batch_size": 128,
+    "seed": 42
+  },
+  "mlp_baseline": {
+    "pathway": {
+      "PCC": 0.6684470176696777,
+      "PCC_per_dim_mean": 0.6392648220062256,
+      "PCC_per_dim_n": 775,
+      "MSE": 0.5161190629005432,
+      "MAE": 0.18752487003803253,
+      "n_cols_used": 775,
+      "n_cols_dropped": 0
+    },
+    "gene": {
+      "PCC": 0.7596384286880493,
+      "PCC_per_dim_mean": 0.38573917746543884,
+      "PCC_per_dim_n": 1000,
+      "MSE": 0.06682034581899643,
+      "MAE": 0.06398915499448776,
+      "n_cols_used": 1000,
+      "n_cols_dropped": 0
+    }
+  },
+  "results": [
+    {
+      "K": 0,
+      "in_dim": 256,
+      "n_epochs": 25,
+      "t_aggregate_s": 0.00402069091796875,
+      "t_train_s": 12.426465511322021,
+      "pathway": {
+        "PCC": 0.6669732332229614,
+        "PCC_per_dim_mean": 0.6383986473083496,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5181329250335693,
+        "MAE": 0.18344081938266754,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7581849694252014,
+        "PCC_per_dim_mean": 0.3847314417362213,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06717837601900101,
+        "MAE": 0.06362016499042511,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "delta_gene_PCC": -0.0014534592628479004,
+      "delta_pathway_PCC": -0.0014737844467163086
+    },
+    {
+      "K": 4,
+      "in_dim": 512,
+      "n_epochs": 27,
+      "t_aggregate_s": 0.08849191665649414,
+      "t_train_s": 11.5751371383667,
+      "pathway": {
+        "PCC": 0.6653891205787659,
+        "PCC_per_dim_mean": 0.6371838450431824,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5200899839401245,
+        "MAE": 0.18483176827430725,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7557907104492188,
+        "PCC_per_dim_mean": 0.38019776344299316,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06782287359237671,
+        "MAE": 0.06413029134273529,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "delta_gene_PCC": -0.0038477182388305664,
+      "delta_pathway_PCC": -0.0030578970909118652
+    },
+    {
+      "K": 8,
+      "in_dim": 512,
+      "n_epochs": 25,
+      "t_aggregate_s": 0.09777069091796875,
+      "t_train_s": 10.991152048110962,
+      "pathway": {
+        "PCC": 0.6652078032493591,
+        "PCC_per_dim_mean": 0.6362723708152771,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5203078985214233,
+        "MAE": 0.1853667050600052,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7564178705215454,
+        "PCC_per_dim_mean": 0.3808131814002991,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06829895079135895,
+        "MAE": 0.06453577429056168,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "delta_gene_PCC": -0.0032205581665039062,
+      "delta_pathway_PCC": -0.0032392144203186035
+    },
+    {
+      "K": 16,
+      "in_dim": 512,
+      "n_epochs": 25,
+      "t_aggregate_s": 0.14382386207580566,
+      "t_train_s": 10.543044328689575,
+      "pathway": {
+        "PCC": 0.6668964624404907,
+        "PCC_per_dim_mean": 0.638122022151947,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.518523097038269,
+        "MAE": 0.18444828689098358,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7552672028541565,
+        "PCC_per_dim_mean": 0.3783869743347168,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06843271106481552,
+        "MAE": 0.06463422626256943,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "delta_gene_PCC": -0.004371225833892822,
+      "delta_pathway_PCC": -0.0015505552291870117
+    },
+    {
+      "K": 32,
+      "in_dim": 512,
+      "n_epochs": 25,
+      "t_aggregate_s": 0.22109150886535645,
+      "t_train_s": 10.393730640411377,
+      "pathway": {
+        "PCC": 0.6668056845664978,
+        "PCC_per_dim_mean": 0.6380897760391235,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5183011293411255,
+        "MAE": 0.18438811600208282,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7560455799102783,
+        "PCC_per_dim_mean": 0.381808340549469,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06814303994178772,
+        "MAE": 0.0644654631614685,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "delta_gene_PCC": -0.003592848777770996,
+      "delta_pathway_PCC": -0.0016413331031799316
+    }
+  ],
+  "timestamp": "2026-06-12T11:07:44.831821"
+}
