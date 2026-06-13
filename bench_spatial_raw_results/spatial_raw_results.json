@@ -1,0 +1,158 @@
+{
+  "args": {
+    "data_dir": "./hest_data",
+    "metadata_csv": "./hest_data/HEST_v1_1_0.csv",
+    "output_dir": "./bench_spatial_raw_results",
+    "raw_cache_path": "./bench_spatial_raw_results/raw_cache.npz",
+    "n_sections": 36,
+    "max_spots_per_section": 400,
+    "n_genes": 1000,
+    "n_pathways": 775,
+    "epochs_stage1": 100,
+    "epochs_stage2": 100,
+    "patience": 15,
+    "batch_size": 128,
+    "feat_batch_size": 64,
+    "lr": 0.0001,
+    "weight_decay": 0.001,
+    "temperature": 0.07,
+    "encoder": "uni",
+    "normalization": "paper_log1p_only",
+    "K_list": "0,4,8,16,32",
+    "seed": 42,
+    "force_rebuild": false
+  },
+  "results": [
+    {
+      "K": 0,
+      "feat_dim": 1024,
+      "t_aggregate_s": 0.10158419609069824,
+      "t_stage1_s": 114.02487015724182,
+      "t_stage2_s": 22.596601247787476,
+      "t_total_s": 136.72305560112,
+      "pathway": {
+        "PCC": 0.6684470176696777,
+        "PCC_per_dim_mean": 0.6392648220062256,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5161190629005432,
+        "MAE": 0.18752487003803253,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7596384286880493,
+        "PCC_per_dim_mean": 0.38573917746543884,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06682034581899643,
+        "MAE": 0.06398915499448776,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "K": 4,
+      "feat_dim": 2048,
+      "t_aggregate_s": 0.39255523681640625,
+      "t_stage1_s": 174.10068368911743,
+      "t_stage2_s": 21.44125461578369,
+      "t_total_s": 195.93449354171753,
+      "pathway": {
+        "PCC": 0.6743054389953613,
+        "PCC_per_dim_mean": 0.6470918655395508,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5087582468986511,
+        "MAE": 0.190049946308136,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7611464858055115,
+        "PCC_per_dim_mean": 0.38697585463523865,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06645586341619492,
+        "MAE": 0.06378062814474106,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "K": 8,
+      "feat_dim": 2048,
+      "t_aggregate_s": 0.4450256824493408,
+      "t_stage1_s": 211.79282927513123,
+      "t_stage2_s": 21.279747247695923,
+      "t_total_s": 233.5176022052765,
+      "pathway": {
+        "PCC": 0.6739811897277832,
+        "PCC_per_dim_mean": 0.6468027234077454,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5091993808746338,
+        "MAE": 0.1905708611011505,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7620856761932373,
+        "PCC_per_dim_mean": 0.3904777765274048,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.0663786381483078,
+        "MAE": 0.0638033002614975,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "K": 16,
+      "feat_dim": 2048,
+      "t_aggregate_s": 0.5597145557403564,
+      "t_stage1_s": 186.14220356941223,
+      "t_stage2_s": 22.87297487258911,
+      "t_total_s": 209.5748929977417,
+      "pathway": {
+        "PCC": 0.6744283437728882,
+        "PCC_per_dim_mean": 0.6478500366210938,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5087396502494812,
+        "MAE": 0.18734268844127655,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.761944055557251,
+        "PCC_per_dim_mean": 0.390154093503952,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06630472838878632,
+        "MAE": 0.06373042613267899,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "K": 32,
+      "feat_dim": 2048,
+      "t_aggregate_s": 1.9367501735687256,
+      "t_stage1_s": 194.76695084571838,
+      "t_stage2_s": 26.17115306854248,
+      "t_total_s": 222.8748540878296,
+      "pathway": {
+        "PCC": 0.6754903793334961,
+        "PCC_per_dim_mean": 0.6489547491073608,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5072645545005798,
+        "MAE": 0.18738029897212982,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7620702981948853,
+        "PCC_per_dim_mean": 0.3915238380432129,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.0662357434630394,
+        "MAE": 0.06263286620378494,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    }
+  ],
+  "timestamp": "2026-06-12T11:39:10.268653"
+}

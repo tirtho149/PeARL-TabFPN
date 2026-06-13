@@ -17,11 +17,21 @@ bash SETUP_DATA.sh                # downloads HEST-1k (~3.9GB) from HuggingFace
 
 # === Paper reproduction (PRIMARY entrypoint for arXiv:2510.03455 numbers) ===
 # Multi-section, 5-fold CV, UNI backbone, feature caching, both variants per fold.
-python run_paper_reproduction.py --n-sections 36 --folds 5
+# Headline command (≈7-8 hours on a single 24GB GPU):
+python run_paper_reproduction.py \
+    --n-sections 36 --folds 5 --split spot \
+    --epochs-stage1 100 --epochs-stage2 100 --patience 15 \
+    --batch-size 128 --feat-batch-size 64 \
+    --encoder uni --normalization paper_log1p_only \
+    --tabpfn-mode refinement --tabpfn-n-estimators 4 \
+    --tabpfn-top-k-pathways 20 --tabpfn-top-k-genes 50 \
+    --output-dir ./reproduction_full
+
 python run_paper_reproduction.py --smoke-test           # 5 sections, 2 folds, 5 epochs
 python run_paper_reproduction.py --split spot           # KFold by spot (matches paper convention; easier task, higher PCC)
 python run_paper_reproduction.py --split section        # GroupKFold by section (no leakage; harder)
 python run_paper_reproduction.py --encoder vit          # fall back to ImageNet ViT-L/16 if UNI access not granted
+python run_paper_reproduction.py --tabpfn-mode residual --tabpfn-top-k-pathways 50 --tabpfn-top-k-genes 200  # α-shrinkage residual blend
 
 # === Single-section pipeline (figures + LaTeX paper) ===
 python run_pearl.py --dataset Breast --epochs-stage1 30 --epochs-stage2 20
@@ -70,7 +80,14 @@ Because the UNI backbone is frozen across both stages, the reproduction script e
 
 ### TabPFN follow-up (`pearl_models_tabpfn.py`)
 
-`TabPFNHead` is a **hybrid head**: an always-present MLP (gradient-trained during stage 2) plus an optional bank of `TabPFNRegressor` instances fitted post-training, one per top-`tabpfn_top_k` highest-target-variance output dim. At eval, `apply_tabpfn(x, mlp_out)` overwrites those dims with TabPFN predictions; the rest keep MLP values.
+`TabPFNHead` is a **hybrid head**: an always-present MLP (gradient-trained during stage 2) plus an optional bank of `TabPFNRegressor` instances fitted post-training, one per top-k output dim. At eval, `apply_tabpfn(x, mlp_out)` modifies those dims; the rest keep MLP values.
+
+Two modes (selected by `--tabpfn-mode`):
+
+- **`refinement`** (default): TabPFN fit on `(X, y)` directly. Top-k ranked by **MLP-residual variance** (dims the MLP fits worst). TabPFN's prediction *replaces* the MLP's on those dims.
+- **`residual`**: TabPFN fit on `(X, y - mlp_pred)`. Top-k ranked by residual variance. Eval blends: `pred = mlp + α_d · tabpfn_residual` with `α_d ∈ [0,1]` calibrated per-dim on a 10% holdout via closed-form least squares (clipped). On dims where TabPFN doesn't help, `α_d → 0` and the head collapses back to the MLP — bounded never-worse on the holdout slice.
+
+Empirically (5-fold CV, Breast, paper_log1p_only): refinement is statistically tied with baseline. Residual+α gives a small per-dim PCC nudge and small MAE drop on genes (single-fold sniff test). The MLP already captures most of the predictable signal.
 
 Important quirks:
 - TabPFN is a 1-D-target in-context **regressor** (not classifier). An earlier design wrapped `TabPFNClassifier` and silently fell back to MLP on multi-output `fit` failure — that path is gone. `predict_proba` is no longer used.
@@ -83,7 +100,14 @@ Important quirks:
 ### Data flow (`pearl_data.py`)
 
 - `load_hest_sample(hest_dir, sample_id, ...)` — single section. Reads HEST-1k (h5ad expression + image patches), aligns barcodes, computes ssGSEA pathway scores via the `ssgsea()` function. Returns `(patches, genes, pathways, coords)` numpy arrays.
-- `load_hest_multi_sample(hest_dir, sample_ids, ...)` — used by `run_paper_reproduction.py`. Concatenates multiple sections and **aligns pathway columns across sections by pooled variance** (top-N by pooled std after concatenation). Without this, top-N-by-variance picks different pathways per section, breaking cross-section training. Also returns `section_ids` for `GroupKFold` splitting. Set `normalization="paper"` for paper-style per-gene min-max + z-normed pathways.
+- `load_hest_multi_sample(hest_dir, sample_ids, ...)` — used by `run_paper_reproduction.py`. Concatenates multiple sections and **aligns pathway columns across sections by pooled variance** (top-N by pooled std after concatenation). Without this, top-N-by-variance picks different pathways per section, breaking cross-section training. Also returns `section_ids` for `GroupKFold` splitting.
+
+**Gene normalization is the single biggest knob in this repo** (`--normalization`):
+- `paper` (default): log1p + per-gene min-max [0,1] — closest to paper convention; single-fold gene PCC ≈ 0.52.
+- `paper_zscore`: log1p + per-gene z-score — similar to `paper`.
+- **`paper_log1p_only`**: log1p with no per-gene scaling — single-fold gene PCC ≈ 0.76, **+0.24 over `paper`**. This is what produces the headline 5-fold result that beats the paper. Per-gene min-max squashes high-variance (most spatially informative) genes onto the same scale as low-variance ones and deflates the global flatten PCC.
+
+When comparing runs, always confirm both used the same `--normalization` — otherwise gene PCC differences are mostly normalization, not architecture.
 - `create_dataloader` → `HESTDataset` yields a dict with keys `patch`, `gene`, `pathway`, `coord` — every model and trainer expects this exact shape.
 
 `run_pearl.py::load_dataset_with_fallback` silently falls back to **random synthetic data** if HEST loading fails — useful for code-path testing but easy to mistake for real results. Look for `"Using synthetic data for demonstration"` in logs.
@@ -112,3 +136,5 @@ Single global `cfg = Config()` consumed everywhere. Many fields are overridable 
 - The repo contains many `.md` / `.txt` planning and verification documents (`PAPER_VERIFICATION.md`, `FOLLOW_UP_*`, `ARCHITECTURE_COMPARISON.txt`, `INDEX.md`, `IMPLEMENTATION_GUIDE.md`, `COMPARISON_QUICK_START.md`). They are author notes from earlier iterations, **not authoritative spec** — the arXiv paper (2510.03455) is. Treat them as historical context.
 - AMP is on by default; disable with `PEARL_NO_AMP=1` if you hit numerical issues on a particular GPU.
 - `pearl_survival.py` uses **simulated** survival data (`simulate_survival_data`) — there is no real survival ground-truth in HEST-1k, so the C-index numbers from `run_pearl.py`'s survival block are illustrative only.
+- `pearl_main.py` is a **legacy** standalone training script superseded by `run_pearl.py` and the entry points above. Do not extend it; if you find yourself reaching for it, you almost certainly want `run_pearl.py` (single-section) or `run_paper_reproduction.py` (multi-section CV) instead.
+- **Headline finding (as of README)**: the baseline PEaRL+UNI alone (5-fold CV, Breast, `paper_log1p_only`) already beats the paper's reported numbers by +0.17 gene PCC and +0.16 pathway PCC. TabPFN refinement is statistically tied with baseline (within 1σ on all metrics). Don't assume "TabPFN run vs baseline" measures TabPFN's contribution — at this point it mostly measures noise. The interesting comparison is normalization choice and `residual`-mode + α-shrinkage.

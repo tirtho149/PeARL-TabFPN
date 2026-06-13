@@ -1,0 +1,152 @@
+{
+  "args": {
+    "data_dir": "./hest_data",
+    "metadata_csv": "./hest_data/HEST_v1_1_0.csv",
+    "output_dir": "./bench_lightgbm_results",
+    "cache_path": "./bench_tabpfn_results/bench_cache.npz",
+    "force_rebuild": false,
+    "n_sections": 36,
+    "max_spots_per_section": 400,
+    "n_genes": 1000,
+    "n_pathways": 775,
+    "epochs_stage1": 100,
+    "epochs_stage2": 100,
+    "patience": 15,
+    "batch_size": 128,
+    "feat_batch_size": 64,
+    "lr": 0.0001,
+    "weight_decay": 0.001,
+    "temperature": 0.07,
+    "encoder": "uni",
+    "normalization": "paper_log1p_only",
+    "top_k_pathways": 20,
+    "top_k_genes": 50,
+    "rff_components": 1024,
+    "seed": 42
+  },
+  "mlp_baseline": {
+    "pathway": {
+      "PCC": 0.6684470176696777,
+      "PCC_per_dim_mean": 0.6392648220062256,
+      "PCC_per_dim_n": 775,
+      "MSE": 0.5161190629005432,
+      "MAE": 0.18752487003803253,
+      "n_cols_used": 775,
+      "n_cols_dropped": 0
+    },
+    "gene": {
+      "PCC": 0.7596384286880493,
+      "PCC_per_dim_mean": 0.38573917746543884,
+      "PCC_per_dim_n": 1000,
+      "MSE": 0.06682034581899643,
+      "MAE": 0.06398915499448776,
+      "n_cols_used": 1000,
+      "n_cols_dropped": 0
+    }
+  },
+  "variants": [
+    {
+      "name": "L1_lgb_refinement",
+      "t_fit_pathway_s": 66.38328313827515,
+      "t_fit_gene_s": 195.4280834197998,
+      "t_fit_total_s": 261.81136655807495,
+      "t_apply_pathway_s": 0.14557218551635742,
+      "t_apply_gene_s": 0.4220883846282959,
+      "t_apply_total_s": 0.5676605701446533,
+      "t_total_s": 262.3790271282196,
+      "top_k_p": 20,
+      "top_k_g": 50,
+      "pathway": {
+        "PCC": 0.6672380566596985,
+        "PCC_per_dim_mean": 0.6386572122573853,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5175907611846924,
+        "MAE": 0.18851669132709503,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.758107602596283,
+        "PCC_per_dim_mean": 0.3851596415042877,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06720125675201416,
+        "MAE": 0.06413792818784714,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "name": "L2_lgb_residual_alpha",
+      "t_fit_pathway_s": 64.57555675506592,
+      "t_fit_gene_s": 179.4985477924347,
+      "t_fit_total_s": 244.0741045475006,
+      "t_apply_pathway_s": 0.1413264274597168,
+      "t_apply_gene_s": 0.5691449642181396,
+      "t_apply_total_s": 0.7104713916778564,
+      "t_total_s": 244.78457593917847,
+      "top_k_p": 20,
+      "top_k_g": 50,
+      "pathway": {
+        "PCC": 0.668441653251648,
+        "PCC_per_dim_mean": 0.6394609212875366,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5161193609237671,
+        "MAE": 0.18778137862682343,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7596071362495422,
+        "PCC_per_dim_mean": 0.38580819964408875,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.0668303444981575,
+        "MAE": 0.06397931277751923,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      },
+      "alpha_pathway": {
+        "min": 0.0,
+        "max": 1.0,
+        "mean": 0.30214136838912964,
+        "n_nonzero": 14
+      },
+      "alpha_gene": {
+        "min": 0.0,
+        "max": 1.0,
+        "mean": 0.2931255102157593,
+        "n_nonzero": 36
+      }
+    },
+    {
+      "name": "L3_krr_rff_refinement",
+      "t_fit_pathway_s": 3.978515148162842,
+      "t_fit_gene_s": 11.503180742263794,
+      "t_fit_total_s": 15.481695890426636,
+      "t_apply_pathway_s": 0.13152003288269043,
+      "t_apply_gene_s": 0.2403421401977539,
+      "t_apply_total_s": 0.37186217308044434,
+      "t_total_s": 15.85355806350708,
+      "top_k_p": 20,
+      "top_k_g": 50,
+      "pathway": {
+        "PCC": 0.6674330234527588,
+        "PCC_per_dim_mean": 0.6384502649307251,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5173536539077759,
+        "MAE": 0.19094569981098175,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7552016377449036,
+        "PCC_per_dim_mean": 0.38407185673713684,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06788874417543411,
+        "MAE": 0.06771965324878693,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    }
+  ],
+  "timestamp": "2026-06-11T21:47:18.834862"
+}

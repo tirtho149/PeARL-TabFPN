@@ -1,0 +1,230 @@
+{
+  "args": {
+    "data_dir": "./hest_data",
+    "metadata_csv": "./hest_data/HEST_v1_1_0.csv",
+    "output_dir": "./bench_tabpfn_results",
+    "n_sections": 36,
+    "max_spots_per_section": 400,
+    "n_genes": 1000,
+    "n_pathways": 775,
+    "epochs_stage1": 100,
+    "epochs_stage2": 100,
+    "patience": 15,
+    "batch_size": 128,
+    "feat_batch_size": 64,
+    "lr": 0.0001,
+    "weight_decay": 0.001,
+    "temperature": 0.07,
+    "encoder": "uni",
+    "normalization": "paper_log1p_only",
+    "seed": 42,
+    "smoke_test": false
+  },
+  "n_train": 10386,
+  "n_val": 2597,
+  "t_stage1_s": 111.22701811790466,
+  "t_stage2_s": 21.27994728088379,
+  "mlp_baseline": {
+    "pathway": {
+      "PCC": 0.6684470176696777,
+      "PCC_per_dim_mean": 0.6392648220062256,
+      "PCC_per_dim_n": 775,
+      "MSE": 0.5161190629005432,
+      "MAE": 0.18752487003803253,
+      "n_cols_used": 775,
+      "n_cols_dropped": 0
+    },
+    "gene": {
+      "PCC": 0.7596384286880493,
+      "PCC_per_dim_mean": 0.38573917746543884,
+      "PCC_per_dim_n": 1000,
+      "MSE": 0.06682034581899643,
+      "MAE": 0.06398915499448776,
+      "n_cols_used": 1000,
+      "n_cols_dropped": 0
+    }
+  },
+  "configs": [
+    {
+      "name": "C1_baseline",
+      "spec": {
+        "name": "C1_baseline",
+        "n_estimators": 4,
+        "max_ctx": null,
+        "top_k_p": 20,
+        "top_k_g": 50
+      },
+      "actual_train_context": 10386,
+      "t_fit_pathway_s": 219.91770005226135,
+      "t_fit_gene_s": 557.0332326889038,
+      "t_fit_total_s": 776.9509327411652,
+      "t_apply_pathway_s": 1092.1823620796204,
+      "t_apply_gene_s": 2761.7734332084656,
+      "t_apply_total_s": 3853.955795288086,
+      "t_total_s": 4630.906728029251,
+      "pathway": {
+        "PCC": 0.6665188670158386,
+        "PCC_per_dim_mean": 0.636163592338562,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5185043215751648,
+        "MAE": 0.18553879857063293,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7573240399360657,
+        "PCC_per_dim_mean": 0.38456740975379944,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06739138066768646,
+        "MAE": 0.06301628053188324,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "name": "C2_n_est_1",
+      "spec": {
+        "name": "C2_n_est_1",
+        "n_estimators": 1,
+        "max_ctx": null,
+        "top_k_p": 20,
+        "top_k_g": 50
+      },
+      "actual_train_context": 10386,
+      "t_fit_pathway_s": 57.49353909492493,
+      "t_fit_gene_s": 132.01902747154236,
+      "t_fit_total_s": 189.51256656646729,
+      "t_apply_pathway_s": 245.59334659576416,
+      "t_apply_gene_s": 617.4442479610443,
+      "t_apply_total_s": 863.0375945568085,
+      "t_total_s": 1052.5501611232758,
+      "pathway": {
+        "PCC": 0.6657724976539612,
+        "PCC_per_dim_mean": 0.6360465884208679,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5194231271743774,
+        "MAE": 0.18563146889209747,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7563573122024536,
+        "PCC_per_dim_mean": 0.38408613204956055,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.0676305964589119,
+        "MAE": 0.06306170672178268,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "name": "C3_ctx_cap_4096",
+      "spec": {
+        "name": "C3_ctx_cap_4096",
+        "n_estimators": 4,
+        "max_ctx": 4096,
+        "top_k_p": 20,
+        "top_k_g": 50
+      },
+      "actual_train_context": 4096,
+      "t_fit_pathway_s": 112.35555386543274,
+      "t_fit_gene_s": 258.39086866378784,
+      "t_fit_total_s": 370.7464225292206,
+      "t_apply_pathway_s": 321.71524810791016,
+      "t_apply_gene_s": 808.7660627365112,
+      "t_apply_total_s": 1130.4813108444214,
+      "t_total_s": 1501.227733373642,
+      "pathway": {
+        "PCC": 0.6663395762443542,
+        "PCC_per_dim_mean": 0.6361377835273743,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5187283158302307,
+        "MAE": 0.18562081456184387,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7576736807823181,
+        "PCC_per_dim_mean": 0.38469254970550537,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06731297820806503,
+        "MAE": 0.0632617250084877,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "name": "C4_top_k_genes_20",
+      "spec": {
+        "name": "C4_top_k_genes_20",
+        "n_estimators": 4,
+        "max_ctx": null,
+        "top_k_p": 20,
+        "top_k_g": 20
+      },
+      "actual_train_context": 10386,
+      "t_fit_pathway_s": 226.78072786331177,
+      "t_fit_gene_s": 223.62672996520996,
+      "t_fit_total_s": 450.40745782852173,
+      "t_apply_pathway_s": 1097.8830723762512,
+      "t_apply_gene_s": 1101.9170370101929,
+      "t_apply_total_s": 2199.800109386444,
+      "t_total_s": 2650.207567214966,
+      "pathway": {
+        "PCC": 0.6665188670158386,
+        "PCC_per_dim_mean": 0.636163592338562,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5185043215751648,
+        "MAE": 0.18553879857063293,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7587109208106995,
+        "PCC_per_dim_mean": 0.38536059856414795,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06704920530319214,
+        "MAE": 0.06355633586645126,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "name": "C5_all_combined",
+      "spec": {
+        "name": "C5_all_combined",
+        "n_estimators": 1,
+        "max_ctx": 4096,
+        "top_k_p": 20,
+        "top_k_g": 20
+      },
+      "actual_train_context": 4096,
+      "t_fit_pathway_s": 24.501736640930176,
+      "t_fit_gene_s": 23.58798909187317,
+      "t_fit_total_s": 48.089725732803345,
+      "t_apply_pathway_s": 70.89107656478882,
+      "t_apply_gene_s": 75.63783502578735,
+      "t_apply_total_s": 146.52891159057617,
+      "t_total_s": 194.61863732337952,
+      "pathway": {
+        "PCC": 0.6658803820610046,
+        "PCC_per_dim_mean": 0.6359156966209412,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.519294261932373,
+        "MAE": 0.18567220866680145,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7585338354110718,
+        "PCC_per_dim_mean": 0.385260671377182,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06709408760070801,
+        "MAE": 0.0636698305606842,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    }
+  ],
+  "timestamp": "2026-06-11T02:03:39.363432"
+}

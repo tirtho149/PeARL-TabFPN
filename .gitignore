@@ -33,6 +33,10 @@ pearl_outputs_*/
 reproduction_*/
 pathway_data/
 
+# Bench artifacts: keep scripts and small reports/JSON, drop large cached arrays
+bench_*_results/*.npz
+bench_*_smoke/
+
 # Local IDE / agent settings
 .claude/
 
