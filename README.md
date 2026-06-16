@@ -297,6 +297,84 @@ For HPC submissions, see `slurm/wacv/` and `docs/WACV_PIPELINE.md`.
 
 ---
 
+## Head refinement benchmark suite
+
+Single-fold experimental suite probing whether anything beats the MLP head on
+UNI features at production scale (36 sections, paper_log1p_only, 80/20 fold,
+~10k training context). Four self-contained scripts, each with a reusable
+on-disk cache so follow-up ideas iterate in seconds. Results live under
+`bench_*_results/`.
+
+### Configurations tested
+
+| Script | Method | Notes |
+|---|---|---|
+| `bench_tabpfn.py` | TabPFN v2 refinement at 5 configurations | n_estimators ∈ {1, 4}, context cap ∈ {full, 4096}, top_k_genes ∈ {20, 50}. C5 = all three speedup knobs stacked. |
+| `bench_lightgbm.py` | LightGBM (refinement + residual+α-shrinkage) + Kernel Ridge with RFF | All three on the same trained MLP via cached embeddings. Apply is sub-second. |
+| `bench_spatial.py` | K-NN aggregation in **projected** 256-d embedding space, K ∈ {0, 4, 8, 16, 32} | Tests whether smoothing the already-learned representation helps. |
+| `bench_spatial_raw.py` | K-NN aggregation in **raw 1024-d UNI** feature space, K ∈ {0, 4, 8, 16, 32} | Aggregation happens before `feat_proj` so the projection learns from the aggregated signal. Full stage 1 + stage 2 retrained per K. |
+
+### Headline result: only one method beat the MLP
+
+All deltas vs the MLP-only baseline (gene PCC 0.7596, pathway PCC 0.6684 on
+this fold). Negative = worse than MLP.
+
+| Method | Δ gene PCC | Δ pathway PCC | Wall time |
+|---|---:|---:|---:|
+| TabPFN C1 (n_est=4, full ctx, top_k_g=50) | −0.0023 | −0.0019 | 77 min |
+| TabPFN C5 (all speedups stacked) | −0.0011 | −0.0025 | **3 min** |
+| LightGBM refinement | −0.0015 | −0.0012 | 4 min |
+| LightGBM residual + α-shrinkage | **0.0000** | **0.0000** | 4 min |
+| Kernel Ridge (RFF) refinement | −0.0044 | −0.0010 | 16 sec |
+| Projected-space K-NN (best K=0) | −0.0014 | −0.0014 | 1 min |
+| **Raw-space K-NN, K=32** | **+0.0025** | **+0.0071** | **15 min** |
+
+**Two implications**:
+
+1. **The MLP head is the ceiling for any "one spot, one embedding" regressor.**
+   TabPFN's foundation-model pretraining doesn't beat a 256→256→1000 MLP on
+   this task. LightGBM with α-shrinkage correctly collapses to MLP-only on
+   the holdout (mean α=0.29 nonzero on 36/50 gene dims, but the contribution
+   cancels at the global-flatten metric). Kernel ridge does fine on pathways
+   but loses on genes.
+
+2. **Where you put spatial aggregation matters more than whether you do it.**
+   K-NN on the projected embedding *hurts* (all K > 0 worse than K=0); K-NN on
+   the raw UNI feature *helps* (K=32 gives +0.0071 pathway PCC, 4× the gain
+   on pathways than genes). The projection layer needs to learn from the
+   aggregated signal, not have smoothing imposed after the fact.
+
+### TabPFN speedup deep-dive
+
+If you're using `--tabpfn-mode` in production, the bench shows the current
+defaults (n_estimators=4, full context, top_k_g=50) are 23.8× more expensive
+than necessary for indistinguishable metrics:
+
+| Config | n_est | ctx cap | top_k_g | Total time | Δ gene PCC |
+|---|:-:|:-:|:-:|---:|---:|
+| C1 (current defaults) | 4 | full | 50 | **77 min** | −0.0023 |
+| C2 (n_est=1) | 1 | full | 50 | 17 min | −0.0032 |
+| C3 (ctx cap 4096) | 4 | 4096 | 50 | 25 min | −0.0019 |
+| C4 (top_k=20) | 4 | full | 20 | 44 min | −0.0009 |
+| **C5 (all stacked)** | **1** | **4096** | **20** | **3 min** | **−0.0011** |
+
+Apply phase dominates fit by ~4× in every config — `apply_tabpfn`'s sequential
+per-dim forward pass on the val set is the hot path, not the fit loop. C5
+brings a 5-fold CV's TabPFN cost from ~6.5 hours to ~15 minutes.
+
+### Caveats
+
+- **Single fold.** All results above are one 80/20 split with seed=42. The raw
+  K-NN +0.0025 / +0.0071 needs 5-fold confirmation before it's a paper claim.
+- **Cache files are 50-100 MB and `.gitignore`-d.** Regenerable in ~3 min from
+  HEST patches. The bench scripts auto-rebuild if no cache is present.
+- **Imports point at `src/pearl_tabpfn/`** — these scripts depend on the
+  package being installed (`pip install -e .`).
+
+Full detail: `bench_{tabpfn,lightgbm,spatial,spatial_raw}_results/BENCHMARK_REPORT.md`.
+
+---
+
 ## Architecture (in one diagram)
 
 ```
@@ -344,6 +422,10 @@ embeddings.
 | `slurm/wacv/08_reproduce_paper_final.sh` | Aggregation + figures + paper.tex SLURM | works |
 | `SETUP_ENV.sh` | One-command reproducible install (auto-detects CUDA) | works |
 | `SETUP_DATA.sh` | HEST-1k download | works |
+| `bench_tabpfn.py` | TabPFN 5-config speedup sweep on a single trained MLP | works |
+| `bench_lightgbm.py` | LightGBM + Kernel Ridge refinement comparison | works |
+| `bench_spatial.py` | K-NN aggregation in projected embedding space | works |
+| `bench_spatial_raw.py` | K-NN aggregation in raw UNI feature space (the one that beats MLP) | works |
 | `scripts/wacv/phase{0..5}_*.py` | WACV characterization phases | stubs |
 | `src/pearl_tabpfn/reproduction.py` | 5-fold CV engine | works |
 | `src/pearl_tabpfn/baseline.py` | `PEaRL` + MLP head | works |
