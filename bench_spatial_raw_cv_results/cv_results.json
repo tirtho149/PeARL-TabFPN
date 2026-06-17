@@ -1,0 +1,289 @@
+{
+  "args": {
+    "data_dir": "./hest_data",
+    "metadata_csv": "./hest_data/HEST_v1_1_0.csv",
+    "output_dir": "./bench_spatial_raw_cv_results",
+    "raw_cache_path": "./bench_spatial_raw_results/raw_cache.npz",
+    "n_sections": 36,
+    "max_spots_per_section": 400,
+    "n_genes": 1000,
+    "n_pathways": 775,
+    "folds": 5,
+    "epochs_stage1": 100,
+    "epochs_stage2": 100,
+    "patience": 15,
+    "batch_size": 128,
+    "feat_batch_size": 64,
+    "lr": 0.0001,
+    "weight_decay": 0.001,
+    "temperature": 0.07,
+    "encoder": "uni",
+    "normalization": "paper_log1p_only",
+    "K_list": "0,32",
+    "seed": 42,
+    "force_rebuild": false
+  },
+  "results": [
+    {
+      "fold": 0,
+      "K": 0,
+      "feat_dim": 1024,
+      "t_aggregate_s": 0.05527377128601074,
+      "t_stage1_s": 132.5606825351715,
+      "t_stage2_s": 24.068870782852173,
+      "pathway": {
+        "PCC": 0.6693165302276611,
+        "PCC_per_dim_mean": 0.640644371509552,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.515034019947052,
+        "MAE": 0.1874871701002121,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7593470811843872,
+        "PCC_per_dim_mean": 0.3851732015609741,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06688753515481949,
+        "MAE": 0.0641031563282013,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "fold": 0,
+      "K": 32,
+      "feat_dim": 2048,
+      "t_aggregate_s": 2.130190849304199,
+      "t_stage1_s": 200.8062083721161,
+      "t_stage2_s": 30.114947080612183,
+      "pathway": {
+        "PCC": 0.675211489200592,
+        "PCC_per_dim_mean": 0.6487124562263489,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5076913237571716,
+        "MAE": 0.18938660621643066,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7625051736831665,
+        "PCC_per_dim_mean": 0.3927236497402191,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06613622605800629,
+        "MAE": 0.06353919953107834,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "fold": 1,
+      "K": 0,
+      "feat_dim": 1024,
+      "t_aggregate_s": 0.05103588104248047,
+      "t_stage1_s": 114.24887418746948,
+      "t_stage2_s": 22.514915704727173,
+      "pathway": {
+        "PCC": 0.6757556796073914,
+        "PCC_per_dim_mean": 0.6401109099388123,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5367885231971741,
+        "MAE": 0.19434808194637299,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7612029314041138,
+        "PCC_per_dim_mean": 0.39305463433265686,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.07200261950492859,
+        "MAE": 0.06776884943246841,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "fold": 1,
+      "K": 32,
+      "feat_dim": 2048,
+      "t_aggregate_s": 2.1063766479492188,
+      "t_stage1_s": 214.86957049369812,
+      "t_stage2_s": 23.84488606452942,
+      "pathway": {
+        "PCC": 0.6821445226669312,
+        "PCC_per_dim_mean": 0.6497433185577393,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5283755660057068,
+        "MAE": 0.1927872896194458,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7649775743484497,
+        "PCC_per_dim_mean": 0.3981621563434601,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.07100462168455124,
+        "MAE": 0.06660963594913483,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "fold": 2,
+      "K": 0,
+      "feat_dim": 1024,
+      "t_aggregate_s": 0.07231020927429199,
+      "t_stage1_s": 138.11509537696838,
+      "t_stage2_s": 29.581493139266968,
+      "pathway": {
+        "PCC": 0.6241505146026611,
+        "PCC_per_dim_mean": 0.5990362167358398,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.576668918132782,
+        "MAE": 0.19799399375915527,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7344335317611694,
+        "PCC_per_dim_mean": 0.3797144889831543,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06863545626401901,
+        "MAE": 0.06430096924304962,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "fold": 2,
+      "K": 32,
+      "feat_dim": 2048,
+      "t_aggregate_s": 2.1184661388397217,
+      "t_stage1_s": 216.9309983253479,
+      "t_stage2_s": 30.3970148563385,
+      "pathway": {
+        "PCC": 0.6305492520332336,
+        "PCC_per_dim_mean": 0.6068652272224426,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5683736801147461,
+        "MAE": 0.19917485117912292,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7375733256340027,
+        "PCC_per_dim_mean": 0.38407689332962036,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06789106130599976,
+        "MAE": 0.06408572942018509,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "fold": 3,
+      "K": 0,
+      "feat_dim": 1024,
+      "t_aggregate_s": 0.07446527481079102,
+      "t_stage1_s": 115.74305295944214,
+      "t_stage2_s": 21.559756755828857,
+      "pathway": {
+        "PCC": 0.6711673140525818,
+        "PCC_per_dim_mean": 0.6392850875854492,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.6210692524909973,
+        "MAE": 0.21264931559562683,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7702241539955139,
+        "PCC_per_dim_mean": 0.40626445412635803,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.076151542365551,
+        "MAE": 0.07100924849510193,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "fold": 3,
+      "K": 32,
+      "feat_dim": 2048,
+      "t_aggregate_s": 2.100656270980835,
+      "t_stage1_s": 194.86992120742798,
+      "t_stage2_s": 30.96659278869629,
+      "pathway": {
+        "PCC": 0.6787331104278564,
+        "PCC_per_dim_mean": 0.6507522463798523,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.6094521284103394,
+        "MAE": 0.21805091202259064,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7741374373435974,
+        "PCC_per_dim_mean": 0.4142287075519562,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.07501661032438278,
+        "MAE": 0.06964579224586487,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "fold": 4,
+      "K": 0,
+      "feat_dim": 1024,
+      "t_aggregate_s": 0.049001216888427734,
+      "t_stage1_s": 148.5148103237152,
+      "t_stage2_s": 25.176730155944824,
+      "pathway": {
+        "PCC": 0.6728870868682861,
+        "PCC_per_dim_mean": 0.6417157649993896,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5504292845726013,
+        "MAE": 0.19371387362480164,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7678294777870178,
+        "PCC_per_dim_mean": 0.39945724606513977,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06964226067066193,
+        "MAE": 0.06623231619596481,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    },
+    {
+      "fold": 4,
+      "K": 32,
+      "feat_dim": 2048,
+      "t_aggregate_s": 2.081467866897583,
+      "t_stage1_s": 197.45348525047302,
+      "t_stage2_s": 33.038727045059204,
+      "pathway": {
+        "PCC": 0.6777879595756531,
+        "PCC_per_dim_mean": 0.6485877633094788,
+        "PCC_per_dim_n": 775,
+        "MSE": 0.5438315272331238,
+        "MAE": 0.19840896129608154,
+        "n_cols_used": 775,
+        "n_cols_dropped": 0
+      },
+      "gene": {
+        "PCC": 0.7718101143836975,
+        "PCC_per_dim_mean": 0.4107607901096344,
+        "PCC_per_dim_n": 1000,
+        "MSE": 0.06859802454710007,
+        "MAE": 0.06669929623603821,
+        "n_cols_used": 1000,
+        "n_cols_dropped": 0
+      }
+    }
+  ],
+  "timestamp": "2026-06-16T23:02:08.157249"
+}
